@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "webhook-replay"
+version = "0.1.0"
+description = "Capture, inspect and re-fire webhooks locally — a zero-dependency dev tool for debugging webhook integrations."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Fernando", email = "ferinazuma@users.noreply.github.com" }]
+keywords = ["webhook", "http", "debugging", "developer-tools", "replay", "cli"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: Internet :: WWW/HTTP",
+]
+# Runtime deps: none. Everything runs on the standard library.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.urls]
+Homepage = "https://github.com/ferinazuma/webhook-replay"
+Source = "https://github.com/ferinazuma/webhook-replay"
+
+[project.scripts]
+webhook-replay = "webhook_replay.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["webhook_replay*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
