@@ -197,6 +197,20 @@ $ pytest
 
 ---
 
+## Part of the ferinazumaDEV ecosystem
+
+`webhook-replay` is one of a family of small, dependency-light developer tools I build and maintain in the open — each a focused, standalone utility meant to do one job well. If this one was useful, these siblings might be too:
+
+- [The GEO Handbook](https://github.com/ferinazumaDEV/generative-engine-optimization-handbook) — the open reference on getting content cited by AI answer engines (ChatGPT, Perplexity, Google AI Overviews, Gemini, Copilot).
+- [politeclient](https://github.com/ferinazumaDEV/politeclient) — a polite, bulletproof HTTP client for Python: retries with backoff, per-host rate-limiting, caching and pagination.
+- [scaffld](https://github.com/ferinazumaDEV/scaffld) — scaffold fully-wired Python projects (tests, CI, pre-commit, license) from templates, with a TUI.
+- [structllm](https://github.com/ferinazumaDEV/structllm) — reliable structured output from any LLM: schema-validated JSON with tolerant repair and retries.
+- Hub & writing: [zentimes.es](https://zentimes.es).
+
+By [ferinazumaDEV](https://github.com/ferinazumaDEV).
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
