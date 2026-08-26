@@ -27,8 +27,8 @@ dependencies = []
 dev = ["pytest>=7.0"]
 
 [project.urls]
-Homepage = "https://github.com/ferinazuma/webhook-replay"
-Source = "https://github.com/ferinazuma/webhook-replay"
+Homepage = "https://github.com/ferinazumaDEV/webhook-replay"
+Source = "https://github.com/ferinazumaDEV/webhook-replay"
 
 [project.scripts]
 webhook-replay = "webhook_replay.cli:main"

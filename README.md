@@ -27,7 +27,7 @@ Zero runtime dependencies. Pure Python standard library.
 ## Install
 
 ```bash
-git clone https://github.com/ferinazuma/webhook-replay
+git clone https://github.com/ferinazumaDEV/webhook-replay
 cd webhook-replay
 pip install .
 ```
