@@ -39,3 +39,5 @@ include = ["webhook_replay*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Make `tests.conftest` importable under plain `pytest` (not only `python -m pytest`).
+pythonpath = ["."]
