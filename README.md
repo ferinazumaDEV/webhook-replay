@@ -52,6 +52,7 @@ Requires Python 3.9+.
 $ webhook-replay serve --port 8973
 webhook-replay listening on http://127.0.0.1:8973
   storing captures in /home/you/.webhook-replay/captures.db
+  limits: body 1048576 bytes, retain 1000 newest, read timeout 30s
   point your webhook here, then Ctrl-C to stop
 22:42:34 #1 POST /github/webhook (34 bytes)
 22:42:34 #2 POST /stripe/webhook (27 bytes)
