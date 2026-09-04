@@ -160,6 +160,31 @@ class Storage:
         with self._connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM requests").fetchone()[0])
 
+    def prune_to(self, keep: int) -> int:
+        """Keep only the ``keep`` newest requests; return how many were removed.
+
+        Used by the capture server to bound the store: once the cap is reached
+        every new capture evicts the oldest one. ``keep <= 0`` is a no-op, which
+        is how "no retention limit" is spelled.
+        """
+        if keep <= 0:
+            return 0
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM requests WHERE id NOT IN"
+                " (SELECT id FROM requests ORDER BY id DESC LIMIT ?)",
+                (keep,),
+            )
+            return int(cur.rowcount or 0)
+
+    def prune_older_than(self, cutoff: str) -> int:
+        """Delete requests received before the ISO timestamp ``cutoff``."""
+        with self._connect() as conn:
+            cur = conn.execute(
+                "DELETE FROM requests WHERE received_at < ?", (cutoff,)
+            )
+            return int(cur.rowcount or 0)
+
     def clear(self) -> int:
         """Delete every stored request; return how many were removed."""
         removed = self.count()

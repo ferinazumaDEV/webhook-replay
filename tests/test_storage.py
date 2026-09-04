@@ -90,3 +90,33 @@ def test_since_filter(store):
     store.add(path="/new", received_at="2030-01-01T00:00:00.000+00:00", **common)
     hits = store.list(since="2025-01-01T00:00:00.000+00:00")
     assert [r.path for r in hits] == ["/new"]
+
+
+def test_prune_to_keeps_the_newest(store):
+    ids = [_add(store, path=f"/h{i}") for i in range(5)]
+    removed = store.prune_to(2)
+    assert removed == 3
+    assert [r.id for r in store.list()] == [ids[-1], ids[-2]]
+
+
+def test_prune_to_is_a_noop_when_under_the_cap(store):
+    _add(store)
+    assert store.prune_to(10) == 0
+    assert store.count() == 1
+
+
+def test_prune_to_zero_means_unlimited(store):
+    _add(store)
+    assert store.prune_to(0) == 0
+    assert store.count() == 1
+
+
+def test_prune_older_than(store):
+    common = dict(
+        method="POST", headers=[], body=b"{}", remote_addr="127.0.0.1",
+    )
+    store.add(path="/old", received_at="2020-01-01T00:00:00.000+00:00", **common)
+    store.add(path="/new", received_at="2030-01-01T00:00:00.000+00:00", **common)
+    removed = store.prune_older_than("2025-01-01T00:00:00.000+00:00")
+    assert removed == 1
+    assert [r.path for r in store.list()] == ["/new"]

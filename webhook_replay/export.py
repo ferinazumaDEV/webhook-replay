@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from shlex import quote
 
+from .redact import redact_headers
 from .replay import build_target_url
 from .storage import WebhookRecord
 
@@ -10,12 +11,22 @@ from .storage import WebhookRecord
 _SKIP_HEADERS = {"host", "content-length", "connection"}
 
 
-def to_curl(record: WebhookRecord, base_url: str = "http://localhost:8000") -> str:
-    """Render ``record`` as a multi-line, copy-pasteable curl command."""
+def to_curl(
+    record: WebhookRecord,
+    base_url: str = "http://localhost:8000",
+    *,
+    show_secrets: bool = False,
+) -> str:
+    """Render ``record`` as a multi-line, copy-pasteable curl command.
+
+    Sensitive header values are masked by default so the command is safe to
+    paste into an issue or a chat; pass ``show_secrets=True`` for a command that
+    actually authenticates.
+    """
     url = build_target_url(base_url, record.path)
     parts: list[str] = [f"curl -X {record.method} {quote(url)}"]
 
-    for key, value in record.headers:
+    for key, value in redact_headers(record.headers, show_secrets=show_secrets):
         if key.lower() in _SKIP_HEADERS:
             continue
         parts.append(f"-H {quote(f'{key}: {value}')}")

@@ -20,6 +20,8 @@ Zero runtime dependencies. Pure Python standard library.
 - **`curl` export** — turn any captured request into a copy-pasteable `curl` command.
 - **Diff payloads** — compare two captured bodies; JSON is canonicalized first, so key-order noise disappears and only real changes show.
 - **Filters** — by method, path substring, or age (`--since 10m`).
+- **Secrets masked on output** — `Authorization`, `Cookie`, signature and API-key headers are printed as `<redacted>` in `show`, `list --json` and `curl` export, so a pasted command is safe. `--show-secrets` opts out; replay always sends the real values.
+- **Bounded by default** — a body-size cap (`413` above it), a retention cap that evicts the oldest captures, and a read timeout, so a stray sender cannot fill your disk or pin a thread.
 - **Nothing to install but Python** — no framework, no broker, no external service.
 
 ---
@@ -50,6 +52,7 @@ Requires Python 3.9+.
 $ webhook-replay serve --port 8973
 webhook-replay listening on http://127.0.0.1:8973
   storing captures in /home/you/.webhook-replay/captures.db
+  limits: body 1048576 bytes, retain 1000 newest, read timeout 30s
   point your webhook here, then Ctrl-C to stop
 22:42:34 #1 POST /github/webhook (34 bytes)
 22:42:34 #2 POST /stripe/webhook (27 bytes)
@@ -83,8 +86,9 @@ POST /stripe/webhook?livemode=false
 
 Headers
   Content-Type: application/json
-  Stripe-Signature: t=1699,v1=abc123
+  Stripe-Signature: <redacted>
   ...
+  (some header values are masked; re-run with --show-secrets to see them)
 
 Body
   {
@@ -127,9 +131,11 @@ You can override the method (`--method POST`) or inject extra headers (`--header
 $ webhook-replay curl 2 --base https://api.myapp.local
 curl -X POST 'https://api.myapp.local/stripe/webhook?livemode=false' \
   -H 'Content-Type: application/json' \
-  -H 'Stripe-Signature: t=1700,v1=def456' \
+  -H 'Stripe-Signature: <redacted>' \
   --data-binary '{"id": "evt_2", "type": "invoice.paid", "amount": 9900, "currency": "eur"}'
 ```
+
+Signature, `Authorization`, `Cookie` and API-key headers are masked so the command is safe to paste into an issue or a chat. Add `--show-secrets` when you need a command that actually authenticates.
 
 ### 6. Diff two payloads
 
@@ -157,23 +163,47 @@ Both bodies are canonicalized as sorted-key JSON before diffing, so reordered ke
 
 | Command | What it does |
 | --- | --- |
-| `serve` | Start the local capture endpoint (`--host`, `--port`, `--status`, `--response`). |
-| `list` | List captured requests (`--method`, `--path`, `--since`, `--limit`, `--json`). |
-| `show <id>` | Show one request in full (`--raw` writes just the body to stdout). |
+| `serve` | Start the local capture endpoint (`--host`, `--port`, `--status`, `--response`, `--max-body`, `--max-captures`, `--read-timeout`). |
+| `list` | List captured requests (`--method`, `--path`, `--since`, `--limit`, `--json`, `--show-secrets`). |
+| `show <id>` | Show one request in full (`--raw` writes just the body to stdout, `--show-secrets` unmasks headers). |
 | `replay <id...>` | Replay request(s) to `--to <url>` (`--last N`, `--times N`, `--method`, `--header`, `--show-response`). |
-| `curl <id>` | Print a request as a `curl` command (`--base <url>`). |
+| `curl <id>` | Print a request as a `curl` command (`--base <url>`, `--show-secrets`). |
 | `diff <a> <b>` | Diff two captured bodies. |
+| `prune` | Delete old captures (`--older-than 7d`, `--keep N`). |
 | `clear` | Delete all captured requests (`-y` to skip the prompt). |
 
 Global: `--db <path>` to use an alternate store, `--no-color` to disable ANSI colors (also honored via `NO_COLOR`).
 
 ---
 
+## Security
+
+**The capture store holds real credentials in clear text.** Every request is saved exactly as it arrived — full headers and full body — in a local SQLite file (`~/.webhook-replay/captures.db` by default). Webhook traffic routinely carries `Authorization` headers, session cookies, signing signatures and API keys, and all of it lands in that file unencrypted. That is deliberate: a replay is only faithful, and a signature only verifies, if the stored bytes are the original ones.
+
+Because the store is not sanitised, the *output* is:
+
+- `show`, `list --json` and `curl` mask the values of `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` and any header whose name contains `secret`, `token`, `signature` or `api-key` / `api_key`. They print as `<redacted>`, keeping a recognisable scheme prefix where there is one (`Bearer <redacted>`).
+- `--show-secrets` turns masking off for a single command, when you genuinely need the value.
+- `replay` is never masked. It forwards the captured headers verbatim, which is the whole point of the tool.
+- Masking is name-based, not value-based, and it covers the output paths only. It is a guard against pasting a secret into an issue or a screen share — not a guarantee that no secret can appear anywhere.
+
+Handling the store:
+
+- **Do not commit it and do not share it.** `.gitignore` already excludes `*.db`, `*.sqlite3` and `captures.db`, but a store kept outside the repo is safer still.
+- **Delete it when you are done.** `webhook-replay clear -y` empties it; `webhook-replay prune --older-than 7d` drops everything older than a week; `rm ~/.webhook-replay/captures.db` removes the file outright.
+- **Keep the server local.** It binds `127.0.0.1` by default and answers *every* method on *every* path with a canned success. Exposing it (`--host 0.0.0.0`, or a tunnel left running) turns it into an open, unauthenticated sink for anything on the network.
+- **The defaults are bounded, not zero.** `serve` refuses bodies over 1 MiB with `413`, retains the 1000 newest captures, and drops a connection that stalls for 30 seconds. Tune them with `--max-body`, `--max-captures` and `--read-timeout`; `0` disables any of the three.
+
+To report a vulnerability, see [SECURITY.md](SECURITY.md).
+
+---
+
 ## How it works
 
-- **Capture** — a threaded `http.server` handler is registered for every HTTP method. It reads `Content-Length` bytes of body, snapshots the headers in order, and writes a row to SQLite. It then answers with a configurable canned response (default `200 {"received": true}`) so the sender is satisfied, plus an `X-Webhook-Replay-Id` header echoing the stored id.
+- **Capture** — a threaded `http.server` handler is registered for every HTTP method. It reads `Content-Length` bytes of body, snapshots the headers in order, and writes a row to SQLite. It then answers with a configurable canned response (default `200 {"received": true}`) so the sender is satisfied, plus an `X-Webhook-Replay-Id` header echoing the stored id. Three bounds apply before anything is stored: an oversized body is refused with `413` without being buffered, a connection that stalls mid-body hits the socket timeout and is dropped, and once the retention cap is reached each new capture evicts the oldest row.
 - **Store** — one SQLite table, one short-lived connection per operation (with a busy timeout), which keeps it safe under the server's per-request threads. Bodies are stored as `BLOB`, so binary payloads round-trip exactly.
 - **Replay** — the stored method, path (including query string) and raw body are rebuilt into a `urllib` request against your target base URL. Hop-by-hop headers that describe the *original* connection (`Host`, `Content-Length`, `Connection`, `Accept-Encoding`) are dropped and recomputed; everything else — including signature headers — is forwarded verbatim. A non-2xx reply is captured and reported rather than raised.
+- **Redact** — masking lives in one module and runs only where a capture is *rendered*: `curl` export, `list --json` and `show`. Nothing filters the capture path or the replay path, so what is stored and what is re-sent stay byte-for-byte original.
 
 Everything is standard library: `http.server`, `sqlite3`, `urllib`, `argparse`, `difflib`, `json`, `shlex`.
 
@@ -187,12 +217,13 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The test suite (36 tests) is self-contained: it spins real capture and receiver servers on OS-assigned free ports and exercises capture, persistence, concurrent writes, replay (success, non-2xx, connection error, method/header overrides), `curl` export and JSON diffing end-to-end. No network access or external services required.
+The test suite (94 tests) is self-contained: it spins real capture and receiver servers on OS-assigned free ports and exercises capture, persistence, concurrent writes, the size / retention / timeout limits, replay (success, non-2xx, connection error, method/header overrides, verbatim forwarding of sensitive headers), output redaction, `curl` export and JSON diffing end-to-end. No network access or external services required.
 
 ```console
 $ pytest
-........................................ [100%]
-36 passed in 6.66s
+........................................................................ [ 76%]
+......................                                                   [100%]
+94 passed in 12.62s
 ```
 
 ---

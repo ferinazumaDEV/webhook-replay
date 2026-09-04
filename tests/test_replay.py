@@ -81,3 +81,32 @@ def test_replay_connection_error_reports_error(store):
     result = replay(record, "http://127.0.0.1:1", timeout=2)
     assert result.error is not None
     assert result.ok is False
+
+
+def test_replay_forwards_sensitive_headers_verbatim(store, receiver):
+    """Redaction is an output concern only — a replayed signature must verify.
+
+    If replay masked these the tool would break its own reason to exist: you are
+    debugging the webhook precisely because its signature check is failing.
+    """
+    rid = _store_request(
+        store,
+        headers=[
+            ("Content-Type", "application/json"),
+            ("Authorization", "Bearer EXAMPLE-NOT-A-REAL-TOKEN"),
+            ("Stripe-Signature", "t=1699,v1=abc123"),
+            ("Cookie", "session=deadbeef"),
+        ],
+    )
+    replay(store.get(rid), receiver.base_url)
+
+    got = receiver.requests[0]["headers"]
+    assert got.get("Authorization") == "Bearer EXAMPLE-NOT-A-REAL-TOKEN"
+    assert got.get("Stripe-Signature") == "t=1699,v1=abc123"
+    assert got.get("Cookie") == "session=deadbeef"
+
+
+def test_capture_stores_headers_verbatim(store):
+    """Nothing is masked on the way in; the store holds the real bytes."""
+    rid = _store_request(store, headers=[("Authorization", "Bearer EXAMPLE-NOT-A-REAL-TOKEN")])
+    assert store.get(rid).header("Authorization") == "Bearer EXAMPLE-NOT-A-REAL-TOKEN"
