@@ -1,6 +1,7 @@
 """Re-send a captured request to a target URL."""
 from __future__ import annotations
 
+import http.client
 import time
 import urllib.error
 import urllib.request
@@ -99,7 +100,11 @@ def replay(
             body=body,
             elapsed_ms=elapsed,
         )
-    except urllib.error.URLError as exc:
+    except (OSError, http.client.HTTPException) as exc:
+        # Connection refused (URLError, an OSError), a target that accepts and
+        # then stalls (TimeoutError) or closes without answering
+        # (RemoteDisconnected / ConnectionResetError) are all reported, not
+        # raised, so a `--times N` run keeps going.
         elapsed = (time.perf_counter() - started) * 1000
         return ReplayResult(
             url=url,
@@ -108,5 +113,5 @@ def replay(
             reason="",
             body=b"",
             elapsed_ms=elapsed,
-            error=str(exc.reason),
+            error=str(getattr(exc, "reason", exc)),
         )

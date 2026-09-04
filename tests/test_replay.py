@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import contextlib
+import socket
+import threading
+import time
+
 from webhook_replay.replay import build_target_url, replay
 from webhook_replay.storage import Storage
 
@@ -79,6 +84,62 @@ def test_replay_connection_error_reports_error(store):
     record = store.get(_store_request(store))
     # Nothing is listening on this port.
     result = replay(record, "http://127.0.0.1:1", timeout=2)
+    assert result.error is not None
+    assert result.ok is False
+
+
+@contextlib.contextmanager
+def _raw_target(on_accept):
+    """A bare TCP listener whose behaviour after accept() is ``on_accept``."""
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    listener.settimeout(5)
+    stop = threading.Event()
+
+    def serve() -> None:
+        try:
+            conn, _ = listener.accept()
+        except OSError:
+            return
+        with conn:
+            on_accept(conn, stop)
+
+    thread = threading.Thread(target=serve, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{listener.getsockname()[1]}"
+    finally:
+        stop.set()
+        listener.close()
+        thread.join(timeout=5)
+
+
+def test_replay_stalled_target_reports_error(store):
+    # Accepts the connection, then never answers: the usual shape of a handler
+    # paused in a debugger. Must come back as a result, not a traceback.
+    def stall(conn, stop):
+        conn.recv(65536)
+        stop.wait(3)
+
+    record = store.get(_store_request(store))
+    with _raw_target(stall) as url:
+        started = time.perf_counter()
+        result = replay(record, url, timeout=0.5)
+        assert time.perf_counter() - started < 3
+    assert result.error is not None
+    assert result.ok is False
+    assert result.status == 0
+
+
+def test_replay_target_closing_without_reply_reports_error(store):
+    def slam(conn, stop):
+        conn.recv(65536)
+        # `with conn:` closes it as soon as we return.
+
+    record = store.get(_store_request(store))
+    with _raw_target(slam) as url:
+        result = replay(record, url, timeout=2)
     assert result.error is not None
     assert result.ok is False
 
