@@ -10,12 +10,31 @@ from datetime import datetime, timedelta, timezone
 from . import __version__, _color
 from .diff import diff_records
 from .export import to_curl
+from .redact import has_sensitive, redact_headers
 from .replay import replay
-from .server import create_server
+from .server import (
+    DEFAULT_MAX_BODY_BYTES,
+    DEFAULT_MAX_CAPTURES,
+    DEFAULT_READ_TIMEOUT,
+    create_server,
+)
 from .storage import DEFAULT_DB, Header, Storage, WebhookRecord
 
 _SINCE_RE = re.compile(r"^(\d+)([smhd])$")
 _SINCE_UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
+
+_SIZE_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([kmg]?i?b?)$", re.IGNORECASE)
+_SIZE_UNITS = {
+    "": 1,
+    "b": 1,
+    "k": 1000, "kb": 1000, "ki": 1024, "kib": 1024,
+    "m": 1000 ** 2, "mb": 1000 ** 2, "mi": 1024 ** 2, "mib": 1024 ** 2,
+    "g": 1000 ** 3, "gb": 1000 ** 3, "gi": 1024 ** 3, "gib": 1024 ** 3,
+}
+
+_REDACTION_HINT = (
+    "some header values are masked; re-run with --show-secrets to see them"
+)
 
 
 def parse_since(value: str | None) -> str | None:
@@ -28,6 +47,19 @@ def parse_since(value: str | None) -> str | None:
         cutoff = datetime.now(timezone.utc) - timedelta(**{_SINCE_UNITS[unit]: amount})
         return cutoff.isoformat(timespec="milliseconds")
     return value  # assume the user passed an ISO timestamp
+
+
+def parse_size(value: str) -> int:
+    """Turn ``1048576`` / ``512KB`` / ``1MiB`` into a byte count."""
+    match = _SIZE_RE.match(str(value).strip())
+    if not match:
+        raise argparse.ArgumentTypeError(
+            f"size must be bytes or a value like 512KB / 1MiB, got {value!r}"
+        )
+    amount, unit = float(match.group(1)), match.group(2).lower()
+    if unit not in _SIZE_UNITS:
+        raise argparse.ArgumentTypeError(f"unknown size unit in {value!r}")
+    return int(amount * _SIZE_UNITS[unit])
 
 
 def parse_header(raw: str) -> Header:
@@ -46,16 +78,18 @@ def _short_time(iso: str) -> str:
         return iso
 
 
-def _record_to_dict(record: WebhookRecord) -> dict:
+def _record_to_dict(record: WebhookRecord, *, show_secrets: bool = False) -> dict:
+    headers = redact_headers(record.headers, show_secrets=show_secrets)
     return {
         "id": record.id,
         "method": record.method,
         "path": record.path,
-        "headers": [list(h) for h in record.headers],
+        "headers": [list(h) for h in headers],
         "body": record.body_text() if record.body_text() is not None else None,
         "body_bytes": len(record.body),
         "remote_addr": record.remote_addr,
         "received_at": record.received_at,
+        "redacted": not show_secrets and has_sensitive(record.headers),
     }
 
 
@@ -69,11 +103,23 @@ def cmd_serve(args: argparse.Namespace, store: Storage) -> int:
         port=args.port,
         response_status=args.status,
         response_body=args.response.encode("utf-8"),
+        max_body_bytes=args.max_body,
+        max_captures=args.max_captures,
+        read_timeout=args.read_timeout,
     )
     host, port = server.server_address
     banner = f"webhook-replay listening on http://{host}:{port}"
+    body_cap = f"{args.max_body} bytes" if args.max_body else "unlimited"
+    keep_cap = f"{args.max_captures} newest" if args.max_captures else "unlimited"
+    read_cap = f"{args.read_timeout:g}s" if args.read_timeout else "none"
     print(_color.paint(banner, "bold", "green"))
     print(_color.paint(f"  storing captures in {store.path}", "dim"))
+    print(
+        _color.paint(
+            f"  limits: body {body_cap}, retain {keep_cap}, read timeout {read_cap}",
+            "dim",
+        )
+    )
     print(_color.paint("  point your webhook here, then Ctrl-C to stop", "dim"), flush=True)
     try:
         server.serve_forever()
@@ -93,7 +139,13 @@ def cmd_list(args: argparse.Namespace, store: Storage) -> int:
         limit=args.limit,
     )
     if args.json:
-        print(json.dumps([_record_to_dict(r) for r in records], indent=2))
+        payload = [
+            _record_to_dict(r, show_secrets=args.show_secrets) for r in records
+        ]
+        # Keep stdout pure JSON so it stays pipeable; the hint goes to stderr.
+        print(json.dumps(payload, indent=2), flush=True)
+        if any(item["redacted"] for item in payload):
+            print(_color.paint(_REDACTION_HINT, "dim"), file=sys.stderr)
         return 0
     if not records:
         print(_color.paint("no captured requests match.", "dim"))
@@ -130,8 +182,10 @@ def cmd_show(args: argparse.Namespace, store: Storage) -> int:
     print(_color.paint(f"#{record.id}  {record.received_at}  from {record.remote_addr}", "dim"))
     print()
     print(_color.paint("Headers", "bold"))
-    for key, value in record.headers:
+    for key, value in redact_headers(record.headers, show_secrets=args.show_secrets):
         print(f"  {_color.paint(key, 'cyan')}: {value}")
+    if not args.show_secrets and has_sensitive(record.headers):
+        print(_color.paint(f"  ({_REDACTION_HINT})", "dim"))
     print()
     print(_color.paint("Body", "bold"))
     text = record.body_text()
@@ -207,7 +261,9 @@ def cmd_curl(args: argparse.Namespace, store: Storage) -> int:
     if record is None:
         print(_color.paint(f"no request with id {args.id}", "red"), file=sys.stderr)
         return 1
-    print(to_curl(record, base_url=args.base))
+    print(to_curl(record, base_url=args.base, show_secrets=args.show_secrets), flush=True)
+    if not args.show_secrets and has_sensitive(record.headers):
+        print(_color.paint(_REDACTION_HINT, "dim"), file=sys.stderr)
     return 0
 
 
@@ -234,9 +290,41 @@ def cmd_clear(args: argparse.Namespace, store: Storage) -> int:
     return 0
 
 
+def cmd_prune(args: argparse.Namespace, store: Storage) -> int:
+    if not args.older_than and args.keep is None:
+        print(
+            _color.paint("pass --older-than and/or --keep.", "red"), file=sys.stderr
+        )
+        return 2
+
+    removed = 0
+    if args.older_than:
+        cutoff = parse_since(args.older_than)
+        if cutoff is None:  # pragma: no cover - guarded by the check above
+            return 2
+        removed += store.prune_older_than(cutoff)
+    if args.keep is not None:
+        removed += store.prune_to(args.keep)
+    print(
+        _color.paint(
+            f"pruned {removed} request(s); {store.count()} left.", "dim"
+        )
+    )
+    return 0
+
+
 # --------------------------------------------------------------------------- #
 # parser
 # --------------------------------------------------------------------------- #
+def _add_show_secrets(parser: argparse.ArgumentParser) -> None:
+    """Add the opt-in that turns masking of sensitive headers back off."""
+    parser.add_argument(
+        "--show-secrets",
+        action="store_true",
+        help="print sensitive header values in full instead of masking them",
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="webhook-replay",
@@ -255,6 +343,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("-p", "--port", type=int, default=8000)
     p_serve.add_argument("--status", type=int, default=200, help="status code to reply with")
     p_serve.add_argument("--response", default='{"received": true}', help="response body")
+    p_serve.add_argument(
+        "--max-body", type=parse_size, default=DEFAULT_MAX_BODY_BYTES, metavar="SIZE",
+        help=(
+            "reject bodies larger than SIZE with 413, e.g. 512KB or 2MiB "
+            f"(default: {DEFAULT_MAX_BODY_BYTES}; 0 disables)"
+        ),
+    )
+    p_serve.add_argument(
+        "--max-captures", type=int, default=DEFAULT_MAX_CAPTURES, metavar="N",
+        help=(
+            "keep only the N newest captures, discarding older ones "
+            f"(default: {DEFAULT_MAX_CAPTURES}; 0 disables)"
+        ),
+    )
+    p_serve.add_argument(
+        "--read-timeout", type=float, default=DEFAULT_READ_TIMEOUT, metavar="SECONDS",
+        help=(
+            "drop a connection that stalls mid-request "
+            f"(default: {DEFAULT_READ_TIMEOUT:g}; 0 disables)"
+        ),
+    )
     p_serve.set_defaults(func=cmd_serve)
 
     p_list = sub.add_parser("list", help="list captured requests")
@@ -263,11 +372,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_list.add_argument("--since", help="only newer than e.g. 10m, 2h, 1d, or an ISO time")
     p_list.add_argument("--limit", type=int, default=50)
     p_list.add_argument("--json", action="store_true", help="output as JSON")
+    _add_show_secrets(p_list)
     p_list.set_defaults(func=cmd_list)
 
     p_show = sub.add_parser("show", help="show one request in full")
     p_show.add_argument("id", type=int)
     p_show.add_argument("--raw", action="store_true", help="write only the raw body to stdout")
+    _add_show_secrets(p_show)
     p_show.set_defaults(func=cmd_show)
 
     p_replay = sub.add_parser("replay", help="re-send captured request(s) to a URL")
@@ -287,6 +398,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_curl = sub.add_parser("curl", help="export a request as a curl command")
     p_curl.add_argument("id", type=int)
     p_curl.add_argument("--base", default="http://localhost:8000", help="base URL for the curl call")
+    _add_show_secrets(p_curl)
     p_curl.set_defaults(func=cmd_curl)
 
     p_diff = sub.add_parser("diff", help="diff the bodies of two requests")
@@ -297,6 +409,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_clear = sub.add_parser("clear", help="delete all captured requests")
     p_clear.add_argument("-y", "--yes", action="store_true", help="do not prompt")
     p_clear.set_defaults(func=cmd_clear)
+
+    p_prune = sub.add_parser("prune", help="delete old captures, keep the rest")
+    p_prune.add_argument(
+        "--older-than", metavar="AGE",
+        help="delete captures older than e.g. 7d, 12h, or an ISO timestamp",
+    )
+    p_prune.add_argument(
+        "--keep", type=int, metavar="N", help="delete all but the N newest captures"
+    )
+    p_prune.set_defaults(func=cmd_prune)
 
     return parser
 
