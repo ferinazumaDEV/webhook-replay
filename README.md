@@ -182,7 +182,7 @@ Global: `--db <path>` to use an alternate store, `--no-color` to disable ANSI co
 
 Because the store is not sanitised, the *output* is:
 
-- `show`, `list --json` and `curl` mask the values of `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` and any header whose name contains `secret`, `token`, `signature` or `api-key` / `api_key`. They print as `<redacted>`, keeping a recognisable scheme prefix where there is one (`Bearer <redacted>`).
+- `show`, `list --json` and `curl` mask the values of `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` and any header whose name contains `secret`, `token`, `signature`, `hmac`, `api-key` / `api_key`, or a `sig` segment (`X-Shopify-Hmac-Sha256`, `Paypal-Transmission-Sig`). They print as `<redacted>`, keeping a recognisable scheme prefix where there is one (`Bearer <redacted>`).
 - `--show-secrets` turns masking off for a single command, when you genuinely need the value.
 - `replay` is never masked. It forwards the captured headers verbatim, which is the whole point of the tool.
 - Masking is name-based, not value-based, and it covers the output paths only. It is a guard against pasting a secret into an issue or a screen share — not a guarantee that no secret can appear anywhere.
