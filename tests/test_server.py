@@ -453,3 +453,49 @@ def test_expect_100_continue_with_oversized_length_is_refused_before_the_body(st
     assert _status(reply) == 413
     assert b"100 Continue" not in reply
     assert store.count() == 0
+
+
+# --------------------------------------------------------------------------- #
+# make_handler, the public building block under create_server
+# --------------------------------------------------------------------------- #
+from http.server import ThreadingHTTPServer  # noqa: E402
+
+from webhook_replay.server import make_handler  # noqa: E402
+
+
+def test_make_handler_builds_a_bound_handler_class(store):
+    captured: list[tuple] = []
+    handler = make_handler(
+        store,
+        response_status=201,
+        response_body=b"made",
+        on_capture=lambda *args: captured.append(args),
+        on_reject=None,
+        read_timeout=0,
+    )
+    assert handler.timeout is None  # 0 disables the socket timeout
+    assert handler.protocol_version == "HTTP/1.1"
+    for method in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
+        assert callable(getattr(handler, f"do_{method}"))
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    try:
+        status, body, resp_headers = _post(f"http://{host}:{port}/made", b'{"x": 1}')
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert status == 201
+    assert body == b"made"
+    assert resp_headers["X-Webhook-Replay-Id"] == "1"
+    assert store.get(1).body == b'{"x": 1}'
+    assert captured == [(1, "POST", "/made", 8)]
+
+
+def test_make_handler_read_timeout_is_applied_to_the_class(store):
+    assert make_handler(store, read_timeout=2.5).timeout == 2.5
+    assert make_handler(store, read_timeout=None).timeout is None
