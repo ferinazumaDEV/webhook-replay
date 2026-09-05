@@ -9,7 +9,7 @@ description = "Capture, inspect and re-fire webhooks locally — a zero-dependen
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
-authors = [{ name = "Fernando", email = "ferinazumaDEV@users.noreply.github.com" }]
+authors = [{ name = "Fernando Aporta Franco", email = "ferinazumaDEV@users.noreply.github.com" }]
 keywords = ["webhook", "http", "debugging", "developer-tools", "replay", "cli"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -39,3 +39,5 @@ include = ["webhook_replay*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# Make `tests.conftest` importable under plain `pytest` (not only `python -m pytest`).
+pythonpath = ["."]

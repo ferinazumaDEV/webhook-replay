@@ -25,6 +25,10 @@ from webhook_replay.redact import (
         "x-apikey",
         "X-Auth-Token",
         "X-Shared-Secret",
+        "X-Shopify-Hmac-Sha256",
+        "Paypal-Transmission-Sig",
+        "X-Webhook-Hmac",
+        "Sig",
     ],
 )
 def test_sensitive_names_are_detected(name):
@@ -33,7 +37,16 @@ def test_sensitive_names_are_detected(name):
 
 @pytest.mark.parametrize(
     "name",
-    ["Content-Type", "User-Agent", "Host", "X-Request-Id", "Accept", "X-Forwarded-For"],
+    [
+        "Content-Type",
+        "User-Agent",
+        "Host",
+        "X-Request-Id",
+        "Accept",
+        "X-Forwarded-For",
+        "X-Design-Id",  # contains "sig", but not as a segment
+        "X-Signal-Strength",
+    ],
 )
 def test_ordinary_names_are_left_alone(name):
     assert not is_sensitive(name)

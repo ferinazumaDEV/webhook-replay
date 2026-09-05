@@ -69,6 +69,16 @@ def test_list_filter_by_path_substring(store):
     assert {r.path for r in hits} == {"/stripe/webhook", "/github/webhook"}
 
 
+def test_list_path_filter_treats_like_wildcards_literally(store):
+    _add(store, path="/a_b")
+    _add(store, path="/ab")
+    _add(store, path="/100%")
+    assert {r.path for r in store.list(path_contains="_")} == {"/a_b"}
+    assert {r.path for r in store.list(path_contains="%")} == {"/100%"}
+    assert {r.path for r in store.list(path_contains="a")} == {"/a_b", "/ab"}
+    assert store.list(path_contains="\\") == []
+
+
 def test_list_newest_first_and_limit(store):
     ids = [_add(store) for _ in range(5)]
     recent = store.list(limit=2)

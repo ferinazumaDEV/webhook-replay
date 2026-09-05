@@ -107,7 +107,7 @@ $ webhook-replay replay 1 --to http://127.0.0.1:8972 --show-response
   {"handled": true}
 ```
 
-Your local handler receives a byte-for-byte copy of the original request:
+Your local handler receives a byte-for-byte copy of the original request (one caveat, repeated header names, is noted under [How it works](#how-it-works)):
 
 ```
 [my-app] received POST /stripe/webhook?livemode=false -> {"id": "evt_1", "type": "invoice.paid", "amount": 4200, "currency": "usd"}
@@ -182,7 +182,7 @@ Global: `--db <path>` to use an alternate store, `--no-color` to disable ANSI co
 
 Because the store is not sanitised, the *output* is:
 
-- `show`, `list --json` and `curl` mask the values of `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` and any header whose name contains `secret`, `token`, `signature` or `api-key` / `api_key`. They print as `<redacted>`, keeping a recognisable scheme prefix where there is one (`Bearer <redacted>`).
+- `show`, `list --json` and `curl` mask the values of `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` and any header whose name contains `secret`, `token`, `signature`, `hmac`, `api-key` / `api_key`, or a `sig` segment (`X-Shopify-Hmac-Sha256`, `Paypal-Transmission-Sig`). They print as `<redacted>`, keeping a recognisable scheme prefix where there is one (`Bearer <redacted>`).
 - `--show-secrets` turns masking off for a single command, when you genuinely need the value.
 - `replay` is never masked. It forwards the captured headers verbatim, which is the whole point of the tool.
 - Masking is name-based, not value-based, and it covers the output paths only. It is a guard against pasting a secret into an issue or a screen share — not a guarantee that no secret can appear anywhere.
@@ -200,9 +200,9 @@ To report a vulnerability, see [SECURITY.md](SECURITY.md).
 
 ## How it works
 
-- **Capture** — a threaded `http.server` handler is registered for every HTTP method. It reads `Content-Length` bytes of body, snapshots the headers in order, and writes a row to SQLite. It then answers with a configurable canned response (default `200 {"received": true}`) so the sender is satisfied, plus an `X-Webhook-Replay-Id` header echoing the stored id. Three bounds apply before anything is stored: an oversized body is refused with `413` without being buffered, a connection that stalls mid-body hits the socket timeout and is dropped, and once the retention cap is reached each new capture evicts the oldest row.
+- **Capture** — a threaded `http.server` handler is registered for every HTTP method. It reads the body — `Content-Length` bytes, or a `Transfer-Encoding: chunked` stream decoded on the way in — snapshots the headers in order, and writes a row to SQLite. A request that carries both `Content-Length` and `Transfer-Encoding`, or a malformed length, is refused with `400` rather than guessed at. It then answers with a configurable canned response (default `200 {"received": true}`) so the sender is satisfied, plus an `X-Webhook-Replay-Id` header echoing the stored id. Three bounds apply before anything is stored: an oversized body is refused with `413` without being buffered (for a chunked body, as soon as the declared chunks pass the cap), a connection that stalls mid-body hits the socket timeout and is dropped, and once the retention cap is reached each new capture evicts the oldest row. Every response closes the connection, so one connection serves exactly one request.
 - **Store** — one SQLite table, one short-lived connection per operation (with a busy timeout), which keeps it safe under the server's per-request threads. Bodies are stored as `BLOB`, so binary payloads round-trip exactly.
-- **Replay** — the stored method, path (including query string) and raw body are rebuilt into a `urllib` request against your target base URL. Hop-by-hop headers that describe the *original* connection (`Host`, `Content-Length`, `Connection`, `Accept-Encoding`) are dropped and recomputed; everything else — including signature headers — is forwarded verbatim. A non-2xx reply is captured and reported rather than raised.
+- **Replay** — the stored method, path (including query string) and raw body are rebuilt into a `urllib` request against your target base URL. Hop-by-hop headers that describe the *original* connection (`Host`, `Content-Length`, `Connection`, `Accept-Encoding`) are dropped and recomputed; everything else — including signature headers — is forwarded verbatim, with one limitation: repeated header names are collapsed to the last value, because `urllib` keeps a single value per header name. A non-2xx reply is captured and reported rather than raised.
 - **Redact** — masking lives in one module and runs only where a capture is *rendered*: `curl` export, `list --json` and `show`. Nothing filters the capture path or the replay path, so what is stored and what is re-sent stay byte-for-byte original.
 
 Everything is standard library: `http.server`, `sqlite3`, `urllib`, `argparse`, `difflib`, `json`, `shlex`.
@@ -217,18 +217,19 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The test suite (94 tests) is self-contained: it spins real capture and receiver servers on OS-assigned free ports and exercises capture, persistence, concurrent writes, the size / retention / timeout limits, replay (success, non-2xx, connection error, method/header overrides, verbatim forwarding of sensitive headers), output redaction, `curl` export and JSON diffing end-to-end. No network access or external services required.
+The test suite (153 tests) is self-contained: it spins real capture and receiver servers on OS-assigned free ports and exercises capture (including chunked bodies and malformed framing), persistence, concurrent writes, the size / retention / timeout limits, replay (success, non-2xx, connection error, stalled target, method/header overrides, verbatim forwarding of sensitive headers), every CLI command, output redaction, `curl` export and JSON diffing end-to-end. No network access or external services required.
 
 ```console
 $ pytest
-........................................................................ [ 76%]
-......................                                                   [100%]
-94 passed in 12.62s
+........................................................................ [ 47%]
+........................................................................ [ 94%]
+.........                                                                [100%]
+153 passed in 22.55s
 ```
 
 ---
 
-## Part of the ferinazumaDEV ecosystem
+## Part of a family of small developer tools
 
 `webhook-replay` is one of a family of small, dependency-light developer tools I build and maintain in the open — each a focused, standalone utility meant to do one job well. If this one was useful, these siblings might be too:
 
@@ -248,4 +249,4 @@ MIT — see [LICENSE](LICENSE).
 
 ---
 
-_Built by Fernando ([@ferinazumaDEV](https://github.com/ferinazumaDEV))._
+_Built by Fernando Aporta Franco ([@ferinazumaDEV](https://github.com/ferinazumaDEV))._

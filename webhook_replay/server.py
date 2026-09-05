@@ -5,13 +5,18 @@ stores the request via :class:`~webhook_replay.storage.Storage`, and replies
 with a configurable canned response so the sender is satisfied.
 
 Captures are stored verbatim — headers and body exactly as they arrived, so a
-replay is byte-for-byte faithful. Three bounds keep that from turning into an
-unbounded local sink: a maximum body size (answered with ``413``), a maximum
-number of retained captures (oldest evicted first), and a socket timeout so a
-slow or stalled sender cannot pin a handler thread forever.
+replay is byte-for-byte faithful. The body is read from ``Content-Length`` or
+decoded from a ``Transfer-Encoding: chunked`` stream; a request carrying both
+headers, or a malformed length, is refused with ``400``. Three bounds keep the
+store from turning into an unbounded local sink: a maximum body size (answered
+with ``413``, for chunked bodies as soon as the declared chunks pass the cap),
+a maximum number of retained captures (oldest evicted first), and a socket
+timeout so a slow or stalled sender cannot pin a handler thread forever. Every
+response closes the connection, so one connection serves exactly one request.
 """
 from __future__ import annotations
 
+import re
 import socket
 from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -36,6 +41,23 @@ DEFAULT_READ_TIMEOUT = 30.0
 
 # How much body to pull per read() call while honouring the size cap.
 _READ_CHUNK = 64 * 1024
+
+# Longest chunk-size / trailer line accepted in a chunked body (http.client
+# uses the same bound), and how many trailer lines before we give up.
+_MAX_LINE = 65536
+_MAX_TRAILERS = 100
+
+# RFC 9110 s8.6: Content-Length is 1*DIGIT -- no sign, no underscore, ASCII only.
+_DIGITS_RE = re.compile(r"[0-9]+")
+_HEX_RE = re.compile(rb"[0-9a-fA-F]+")
+
+
+class _BadRequest(Exception):
+    """Malformed request framing; answered with ``400``."""
+
+
+class _TooLarge(Exception):
+    """Body over ``max_body_bytes``; answered with ``413``."""
 
 OnCapture = Callable[[int, str, str, int], None]
 OnReject = Callable[[str, str, int, str], None]
@@ -88,6 +110,12 @@ def make_handler(
         # A friendlier Server: header than the default BaseHTTP/x.y string.
         server_version = "webhook-replay/0"
         sys_version = ""
+        # HTTP/1.1 so a sender's `Expect: 100-continue` is answered at once
+        # instead of after its expect-timeout (about a second with curl).
+        # Every response carries `Connection: close`, so a connection still
+        # serves exactly one request and no handler thread is left waiting
+        # for a second one that never comes.
+        protocol_version = "HTTP/1.1"
         # socketserver applies this to the connection in setup(), so a sender
         # that opens a socket and then stalls cannot hold the thread forever.
         timeout = None
@@ -122,15 +150,85 @@ def make_handler(
                 remaining -= len(chunk)
             return b"".join(chunks)
 
+        def _read_chunked_body(self) -> bytes:
+            """Decode a ``Transfer-Encoding: chunked`` body, honouring the cap.
+
+            Raises :class:`_BadRequest` on malformed framing and
+            :class:`_TooLarge` as soon as the declared chunks exceed
+            ``max_body_bytes``, before that data is buffered.
+            """
+            chunks: list[bytes] = []
+            total = 0
+            while True:
+                line = self.rfile.readline(_MAX_LINE + 1)
+                if len(line) > _MAX_LINE:
+                    raise _BadRequest("chunk-size line too long")
+                size_text = line.split(b";", 1)[0].strip()
+                if not _HEX_RE.fullmatch(size_text):
+                    raise _BadRequest("malformed chunk size")
+                size = int(size_text, 16)
+                if size == 0:
+                    break
+                total += size
+                if max_body_bytes and total > max_body_bytes:
+                    raise _TooLarge()
+                data = self._read_body(size)
+                if len(data) != size or self.rfile.read(2) != b"\r\n":
+                    raise _BadRequest("truncated chunk")
+                chunks.append(data)
+            # Trailer section: optional header lines, then the blank line
+            # that ends the message.
+            for _ in range(_MAX_TRAILERS):
+                line = self.rfile.readline(_MAX_LINE + 1)
+                if not line or len(line) > _MAX_LINE:
+                    raise _BadRequest("malformed chunked trailer")
+                if line in (b"\r\n", b"\n"):
+                    return b"".join(chunks)
+            raise _BadRequest("too many chunked trailers")
+
+        def handle_expect_100(self) -> bool:
+            # Refuse an oversized announcement before the sender ships the
+            # body -- that is what `Expect: 100-continue` is for. Anything
+            # else gets the standard `100 Continue`; the full validation of
+            # the headers happens in _capture.
+            values = self.headers.get_all("Content-Length") or []
+            if (
+                max_body_bytes
+                and len(values) == 1
+                and _DIGITS_RE.fullmatch(values[0].strip())
+                and int(values[0].strip()) > max_body_bytes
+            ):
+                self._reject(
+                    413,
+                    f"body of {values[0].strip()} bytes exceeds the "
+                    f"{max_body_bytes} byte limit",
+                )
+                return False
+            return super().handle_expect_100()
+
         def _capture(self) -> None:
-            try:
-                length = int(self.headers.get("Content-Length") or 0)
-            except ValueError:
+            lengths = self.headers.get_all("Content-Length") or []
+            codings = self.headers.get_all("Transfer-Encoding") or []
+            if lengths and codings:
+                # RFC 9112 s6.3: the pair is ambiguous framing and the classic
+                # request-smuggling ingredient; refuse rather than guess.
+                self._reject(400, "Content-Length and Transfer-Encoding both present")
+                return
+            if len(lengths) > 1 or (
+                lengths and not _DIGITS_RE.fullmatch(lengths[0].strip())
+            ):
+                # Duplicate, signed, underscored or non-ASCII lengths all
+                # capture the wrong bytes; RFC 9110 s8.6 says reject.
                 self._reject(400, "malformed Content-Length")
                 return
-            if length < 0:
-                self._reject(400, "malformed Content-Length")
-                return
+            chunked = False
+            if codings:
+                names = [c.strip().lower() for value in codings for c in value.split(",")]
+                if names != ["chunked"]:
+                    self._reject(501, "unsupported Transfer-Encoding")
+                    return
+                chunked = True
+            length = int(lengths[0].strip()) if lengths else 0
 
             if max_body_bytes and length > max_body_bytes:
                 # Refuse before reading: the point of the cap is not to buffer
@@ -141,7 +239,18 @@ def make_handler(
                 return
 
             try:
-                body = self._read_body(length) if length > 0 else b""
+                if chunked:
+                    body = self._read_chunked_body()
+                else:
+                    body = self._read_body(length) if length > 0 else b""
+            except _TooLarge:
+                self._reject(
+                    413, f"chunked body exceeds the {max_body_bytes} byte limit"
+                )
+                return
+            except _BadRequest as exc:
+                self._reject(400, str(exc))
+                return
             except socket.timeout:
                 # socket.timeout is TimeoutError on 3.10+; on 3.9 it is an OSError.
                 self._reject(408, "timed out reading the request body")
@@ -168,6 +277,8 @@ def make_handler(
             self.send_header("Content-Type", response_content_type)
             self.send_header("Content-Length", str(len(payload)))
             self.send_header("X-Webhook-Replay-Id", str(request_id))
+            # One request per connection, whatever the sender asked for.
+            self.send_header("Connection", "close")
             self.end_headers()
             if payload:
                 self.wfile.write(payload)

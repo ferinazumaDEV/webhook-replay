@@ -205,3 +205,297 @@ def test_malformed_content_length_is_rejected(store):
             sock.close()
     assert b"400" in reply
     assert store.count() == 0
+
+
+# --------------------------------------------------------------------------- #
+# request framing: chunked bodies, Content-Length validation, one request per
+# connection, Expect: 100-continue
+# --------------------------------------------------------------------------- #
+import time  # noqa: E402
+
+
+def _connect(base: str, timeout: float = 5) -> socket.socket:
+    host, port = base.rsplit(":", 1)
+    return socket.create_connection((host.rsplit("/", 1)[-1], int(port)), timeout=timeout)
+
+
+def _read_all(sock: socket.socket, timeout: float = 5) -> bytes:
+    """Read until the server closes the connection (or ``timeout`` passes)."""
+    sock.settimeout(timeout)
+    chunks: list[bytes] = []
+    while True:
+        try:
+            data = sock.recv(65536)
+        except socket.timeout:
+            break
+        if not data:
+            break
+        chunks.append(data)
+    return b"".join(chunks)
+
+
+def _raw(base: str, payload: bytes) -> bytes:
+    """Send raw bytes to the capture server and return its whole reply."""
+    sock = _connect(base)
+    try:
+        try:
+            sock.sendall(payload)
+        except OSError:
+            # The server may already have answered and closed (e.g. 413).
+            pass
+        return _read_all(sock)
+    finally:
+        sock.close()
+
+
+def _status(reply: bytes) -> int:
+    return int(reply.split(b" ", 2)[1])
+
+
+def _chunked(body: bytes, chunk: int = 4096) -> bytes:
+    out = b""
+    for i in range(0, len(body), chunk):
+        piece = body[i : i + chunk]
+        out += f"{len(piece):x}\r\n".encode() + piece + b"\r\n"
+    return out + b"0\r\n\r\n"
+
+
+def test_chunked_body_is_decoded_and_stored(store):
+    with _serving(store) as base:
+        reply = _raw(
+            base,
+            b"POST /c HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+            b"5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n",
+        )
+    assert _status(reply) == 200
+    assert store.count() == 1
+    record = store.get(1)
+    assert record.body == b"hello world"
+    # Headers are still stored as they arrived.
+    assert record.header("Transfer-Encoding") == "chunked"
+
+
+def test_chunked_body_with_trailers_is_accepted(store):
+    with _serving(store) as base:
+        reply = _raw(
+            base,
+            b"POST /t HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+            b"3\r\nabc\r\n0\r\nX-Checksum: 1\r\n\r\n",
+        )
+    assert _status(reply) == 200
+    assert store.get(1).body == b"abc"
+
+
+def test_chunked_body_over_the_cap_is_rejected_with_413(store):
+    with _serving(store, max_body_bytes=1024) as base:
+        reply = _raw(
+            base,
+            b"POST /big HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+            + _chunked(b"x" * 4096),
+        )
+    assert _status(reply) == 413
+    assert store.count() == 0
+
+
+def test_chunked_body_at_the_cap_is_accepted(store):
+    with _serving(store, max_body_bytes=1024) as base:
+        reply = _raw(
+            base,
+            b"POST /ok HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+            + _chunked(b"x" * 1024, chunk=512),
+        )
+    assert _status(reply) == 200
+    assert len(store.get(1).body) == 1024
+
+
+@pytest.mark.parametrize(
+    "framing",
+    [
+        b"zz\r\nhello\r\n0\r\n\r\n",  # non-hex chunk size
+        b"5\r\nhelloXX0\r\n\r\n",  # missing CRLF after the chunk data
+    ],
+)
+def test_malformed_chunked_body_is_rejected_with_400(store, framing):
+    with _serving(store) as base:
+        reply = _raw(
+            base,
+            b"POST /bad HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n" + framing,
+        )
+    assert _status(reply) == 400
+    assert store.count() == 0
+
+
+def test_truncated_chunked_body_is_rejected_with_400(store):
+    # The sender announces five bytes, ships three and hangs up.
+    with _serving(store) as base:
+        sock = _connect(base)
+        try:
+            sock.sendall(
+                b"POST /cut HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+                b"5\r\nhel"
+            )
+            sock.shutdown(socket.SHUT_WR)
+            reply = _read_all(sock)
+        finally:
+            sock.close()
+    assert _status(reply) == 400
+    assert store.count() == 0
+
+
+def test_content_length_with_transfer_encoding_is_rejected_with_400(store):
+    # RFC 9112 s6.3: ambiguous framing, the request-smuggling ingredient.
+    with _serving(store) as base:
+        reply = _raw(
+            base,
+            b"POST /both HTTP/1.1\r\nHost: x\r\nContent-Length: 5\r\n"
+            b"Transfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n0\r\n\r\n",
+        )
+    assert _status(reply) == 400
+    assert store.count() == 0
+
+
+def test_unsupported_transfer_encoding_is_rejected_with_501(store):
+    with _serving(store) as base:
+        reply = _raw(
+            base,
+            b"POST /gz HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: gzip\r\n\r\n",
+        )
+    assert _status(reply) == 501
+    assert store.count() == 0
+
+
+def test_pipelined_second_request_is_not_processed(store):
+    # Exactly one request per connection: the response closes it, so a
+    # request smuggled behind the first one never reaches the store.
+    with _serving(store) as base:
+        reply = _raw(
+            base,
+            b"POST /e1 HTTP/1.1\r\nHost: x\r\nTransfer-Encoding: chunked\r\n\r\n"
+            b"2\r\nhi\r\n0\r\n\r\n"
+            b"POST /e2 HTTP/1.1\r\nHost: x\r\nContent-Length: 0\r\n\r\n",
+        )
+    assert reply.count(b"HTTP/1.1 ") == 1
+    assert store.count() == 1
+    assert store.get(1).path == "/e1"
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        b"Content-Length: 1_000",
+        b"Content-Length: +5",
+        b"Content-Length: -0",
+        b"Content-Length: 5\r\nContent-Length: 10",
+        b"Content-Length: 0x5",
+        b"Content-Length: ",
+    ],
+)
+def test_non_canonical_content_length_is_rejected_with_400(store, header):
+    # RFC 9110 s8.6: Content-Length is 1*DIGIT and duplicates must agree.
+    # int() alone accepted every one of these, storing the wrong bytes.
+    with _serving(store) as base:
+        reply = _raw(
+            base, b"POST /cl HTTP/1.1\r\nHost: x\r\n" + header + b"\r\n\r\n0123456789"
+        )
+    assert _status(reply) == 400
+    assert store.count() == 0
+
+
+def test_response_closes_the_connection_even_if_keep_alive_was_asked(store):
+    with _serving(store) as base:
+        sock = _connect(base)
+        try:
+            sock.sendall(
+                b"POST /ka HTTP/1.1\r\nHost: x\r\nConnection: keep-alive\r\n"
+                b"Content-Length: 2\r\n\r\n{}"
+            )
+            started = time.perf_counter()
+            reply = _read_all(sock, timeout=3)
+            elapsed = time.perf_counter() - started
+        finally:
+            sock.close()
+    assert _status(reply) == 200
+    assert b"connection: close" in reply.lower()
+    # EOF arrived with the response, not after a keep-alive wait.
+    assert elapsed < 1.0
+    assert store.count() == 1
+
+
+def test_expect_100_continue_is_answered_immediately(store):
+    with _serving(store) as base:
+        sock = _connect(base)
+        try:
+            sock.sendall(
+                b"POST /x HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n"
+                b"Content-Length: 5\r\n\r\n"
+            )
+            sock.settimeout(1)
+            started = time.perf_counter()
+            interim = sock.recv(1024)  # would time out if no 100 were sent
+            elapsed = time.perf_counter() - started
+            sock.sendall(b"hello")
+            reply = _read_all(sock)
+        finally:
+            sock.close()
+    assert interim.startswith(b"HTTP/1.1 100")
+    assert elapsed < 0.5
+    assert _status(reply) == 200
+    assert store.get(1).body == b"hello"
+
+
+def test_expect_100_continue_with_oversized_length_is_refused_before_the_body(store):
+    with _serving(store, max_body_bytes=1024) as base:
+        reply = _raw(
+            base,
+            b"POST /x HTTP/1.1\r\nHost: x\r\nExpect: 100-continue\r\n"
+            b"Content-Length: 4096\r\n\r\n",
+        )
+    assert _status(reply) == 413
+    assert b"100 Continue" not in reply
+    assert store.count() == 0
+
+
+# --------------------------------------------------------------------------- #
+# make_handler, the public building block under create_server
+# --------------------------------------------------------------------------- #
+from http.server import ThreadingHTTPServer  # noqa: E402
+
+from webhook_replay.server import make_handler  # noqa: E402
+
+
+def test_make_handler_builds_a_bound_handler_class(store):
+    captured: list[tuple] = []
+    handler = make_handler(
+        store,
+        response_status=201,
+        response_body=b"made",
+        on_capture=lambda *args: captured.append(args),
+        on_reject=None,
+        read_timeout=0,
+    )
+    assert handler.timeout is None  # 0 disables the socket timeout
+    assert handler.protocol_version == "HTTP/1.1"
+    for method in ("GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"):
+        assert callable(getattr(handler, f"do_{method}"))
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    host, port = server.server_address
+    try:
+        status, body, resp_headers = _post(f"http://{host}:{port}/made", b'{"x": 1}')
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+
+    assert status == 201
+    assert body == b"made"
+    assert resp_headers["X-Webhook-Replay-Id"] == "1"
+    assert store.get(1).body == b'{"x": 1}'
+    assert captured == [(1, "POST", "/made", 8)]
+
+
+def test_make_handler_read_timeout_is_applied_to_the_class(store):
+    assert make_handler(store, read_timeout=2.5).timeout == 2.5
+    assert make_handler(store, read_timeout=None).timeout is None

@@ -8,8 +8,9 @@ what lands on your terminal, your clipboard or a pasted bug report is masked.
 
 Detection is deny-list based on the header *name* only: an exact match against
 :data:`SENSITIVE_HEADERS`, or a substring match against
-:data:`SENSITIVE_NAME_RE` (``secret``, ``token``, ``signature``, ``api-key``).
-Values are never inspected, so a masked header stays recognisable in the output.
+:data:`SENSITIVE_NAME_RE` (``secret``, ``token``, ``signature``, ``hmac``, a
+``sig`` segment as in ``Paypal-Transmission-Sig``, ``api-key``). Values are
+never inspected, so a masked header stays recognisable in the output.
 """
 from __future__ import annotations
 
@@ -30,8 +31,13 @@ SENSITIVE_HEADERS = frozenset(
 )
 
 #: Substring pattern for the long tail: ``X-Hub-Signature``, ``X-Api-Key``,
-#: ``Stripe-Signature``, ``X-Auth-Token``, ``X-Shared-Secret``, ...
-SENSITIVE_NAME_RE = re.compile(r"secret|token|signature|api[-_]?key", re.IGNORECASE)
+#: ``Stripe-Signature``, ``X-Auth-Token``, ``X-Shared-Secret``,
+#: ``X-Shopify-Hmac-Sha256``, ``Paypal-Transmission-Sig``, ... The ``sig``
+#: alternative only matches a whole ``-``-delimited segment, so ``X-Design-Id``
+#: is left alone.
+SENSITIVE_NAME_RE = re.compile(
+    r"secret|token|signature|hmac|(?:^|-)sig(?:$|-)|api[-_]?key", re.IGNORECASE
+)
 
 #: What replaces a masked value.
 PLACEHOLDER = "<redacted>"

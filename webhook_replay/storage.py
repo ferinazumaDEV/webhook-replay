@@ -135,8 +135,15 @@ class Storage:
             clauses.append("method = ?")
             params.append(method.upper())
         if path_contains:
-            clauses.append("path LIKE ?")
-            params.append(f"%{path_contains}%")
+            # Escape LIKE's own wildcards so `_` and `%` in the filter match
+            # themselves: the CLI documents --path as a plain substring.
+            escaped = (
+                path_contains.replace("\\", "\\\\")
+                .replace("%", "\\%")
+                .replace("_", "\\_")
+            )
+            clauses.append("path LIKE ? ESCAPE '\\'")
+            params.append(f"%{escaped}%")
         if since:
             clauses.append("received_at >= ?")
             params.append(since)

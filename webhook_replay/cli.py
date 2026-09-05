@@ -20,7 +20,7 @@ from .server import (
 )
 from .storage import DEFAULT_DB, Header, Storage, WebhookRecord
 
-_SINCE_RE = re.compile(r"^(\d+)([smhd])$")
+_SINCE_RE = re.compile(r"^(\d+)([smhd])$", re.IGNORECASE)
 _SINCE_UNITS = {"s": "seconds", "m": "minutes", "h": "hours", "d": "days"}
 
 _SIZE_RE = re.compile(r"^(\d+(?:\.\d+)?)\s*([kmg]?i?b?)$", re.IGNORECASE)
@@ -38,15 +38,55 @@ _REDACTION_HINT = (
 
 
 def parse_since(value: str | None) -> str | None:
-    """Turn ``10m`` / ``2h`` / ``1d`` into an ISO cutoff; pass ISO through."""
+    """Turn ``10m`` / ``2h`` / ``1d`` or an ISO timestamp into a UTC ISO cutoff.
+
+    Units are case-insensitive (``7D`` is seven days; there is no month unit,
+    so ``10M`` is ten minutes). A naive ISO timestamp is taken as UTC. Anything
+    else raises :class:`argparse.ArgumentTypeError`: the store compares
+    timestamps as strings, so an unparsed value such as ``yesterday`` would
+    otherwise become a cutoff that matches -- or deletes -- every capture.
+    """
     if not value:
         return None
-    match = _SINCE_RE.match(value.strip())
+    text = value.strip()
+    match = _SINCE_RE.match(text)
     if match:
-        amount, unit = int(match.group(1)), match.group(2)
+        amount, unit = int(match.group(1)), match.group(2).lower()
         cutoff = datetime.now(timezone.utc) - timedelta(**{_SINCE_UNITS[unit]: amount})
         return cutoff.isoformat(timespec="milliseconds")
-    return value  # assume the user passed an ISO timestamp
+    if text.endswith(("Z", "z")):
+        # datetime.fromisoformat only accepts a trailing Z from Python 3.11 on.
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"expected an age like 7d, 12h, 10m or an ISO timestamp, got {value!r}"
+        ) from None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat(timespec="milliseconds")
+
+
+def parse_positive_int(value: str) -> int:
+    """An integer of at least 1, for counts such as ``--times``."""
+    try:
+        number = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from None
+    if number < 1:
+        raise argparse.ArgumentTypeError(f"must be >= 1, got {number}")
+    return number
+
+
+def parse_keep(value: str) -> int:
+    """``--keep N``: at least 1, because 0 would silently keep everything."""
+    try:
+        return parse_positive_int(value)
+    except argparse.ArgumentTypeError:
+        raise argparse.ArgumentTypeError(
+            "--keep must be >= 1; use `clear` to delete everything"
+        ) from None
 
 
 def parse_size(value: str) -> int:
@@ -135,7 +175,7 @@ def cmd_list(args: argparse.Namespace, store: Storage) -> int:
     records = store.list(
         method=args.method,
         path_contains=args.path,
-        since=parse_since(args.since),
+        since=args.since,
         limit=args.limit,
     )
     if args.json:
@@ -220,6 +260,10 @@ def _resolve_targets(args: argparse.Namespace, store: Storage) -> list[WebhookRe
 
 
 def cmd_replay(args: argparse.Namespace, store: Storage) -> int:
+    if args.ids and args.last:
+        args.parser.error("pass request id(s) or --last N, not both")
+    if not args.ids and not args.last:
+        args.parser.error("pass request id(s) or --last N")
     targets = _resolve_targets(args, store)
     if not targets:
         print(_color.paint("nothing to replay.", "yellow"), file=sys.stderr)
@@ -299,10 +343,7 @@ def cmd_prune(args: argparse.Namespace, store: Storage) -> int:
 
     removed = 0
     if args.older_than:
-        cutoff = parse_since(args.older_than)
-        if cutoff is None:  # pragma: no cover - guarded by the check above
-            return 2
-        removed += store.prune_older_than(cutoff)
+        removed += store.prune_older_than(args.older_than)
     if args.keep is not None:
         removed += store.prune_to(args.keep)
     print(
@@ -369,7 +410,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_list = sub.add_parser("list", help="list captured requests")
     p_list.add_argument("--method", help="filter by HTTP method")
     p_list.add_argument("--path", help="filter by substring of the path")
-    p_list.add_argument("--since", help="only newer than e.g. 10m, 2h, 1d, or an ISO time")
+    p_list.add_argument(
+        "--since", type=parse_since, metavar="AGE",
+        help="only newer than e.g. 10m, 2h, 1d (case-insensitive), or an ISO time",
+    )
     p_list.add_argument("--limit", type=int, default=50)
     p_list.add_argument("--json", action="store_true", help="output as JSON")
     _add_show_secrets(p_list)
@@ -385,7 +429,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_replay.add_argument("ids", type=int, nargs="*", help="request id(s) to replay")
     p_replay.add_argument("--to", required=True, help="base URL of your local app")
     p_replay.add_argument("--last", type=int, metavar="N", help="replay the N most recent instead")
-    p_replay.add_argument("--times", type=int, default=1, help="send each request N times")
+    p_replay.add_argument(
+        "--times", type=parse_positive_int, default=1, metavar="N",
+        help="send each request N times (N >= 1)",
+    )
     p_replay.add_argument("--timeout", type=float, default=10.0)
     p_replay.add_argument("--method", help="override the HTTP method")
     p_replay.add_argument(
@@ -393,7 +440,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="add/override a header (repeatable)",
     )
     p_replay.add_argument("--show-response", action="store_true", help="print each response body")
-    p_replay.set_defaults(func=cmd_replay)
+    p_replay.set_defaults(func=cmd_replay, parser=p_replay)
 
     p_curl = sub.add_parser("curl", help="export a request as a curl command")
     p_curl.add_argument("id", type=int)
@@ -412,11 +459,15 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_prune = sub.add_parser("prune", help="delete old captures, keep the rest")
     p_prune.add_argument(
-        "--older-than", metavar="AGE",
-        help="delete captures older than e.g. 7d, 12h, or an ISO timestamp",
+        "--older-than", type=parse_since, metavar="AGE",
+        help=(
+            "delete captures older than e.g. 7d, 12h, 10m (case-insensitive), "
+            "or an ISO timestamp"
+        ),
     )
     p_prune.add_argument(
-        "--keep", type=int, metavar="N", help="delete all but the N newest captures"
+        "--keep", type=parse_keep, metavar="N",
+        help="delete all but the N newest captures (N >= 1; use `clear` to delete all)",
     )
     p_prune.set_defaults(func=cmd_prune)
 
