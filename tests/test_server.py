@@ -499,3 +499,63 @@ def test_make_handler_builds_a_bound_handler_class(store):
 def test_make_handler_read_timeout_is_applied_to_the_class(store):
     assert make_handler(store, read_timeout=2.5).timeout == 2.5
     assert make_handler(store, read_timeout=None).timeout is None
+
+
+# --------------------------------------------------------------------------- #
+# listen backlog (regression: CI red on 2026-09-06)
+# --------------------------------------------------------------------------- #
+import http.client  # noqa: E402
+
+from webhook_replay.server import CaptureServer  # noqa: E402
+
+
+def test_listen_backlog_is_deeper_than_the_socketserver_default():
+    """The contract, asserted directly so it cannot regress silently.
+
+    socketserver defaults ``request_queue_size`` to 5. At that depth the kernel
+    refuses connections past the fifth pending one and captures are lost, which
+    is the one failure this program must not have. This is the deterministic
+    half of the regression; the burst test below is the behavioural half.
+    """
+    import socketserver
+
+    assert socketserver.TCPServer.request_queue_size == 5, (
+        "socketserver's default changed; re-check whether the subclass is still needed"
+    )
+    assert CaptureServer.request_queue_size > 5
+    assert CaptureServer.request_queue_size == socket.SOMAXCONN
+
+
+def test_a_simultaneous_burst_loses_nothing(capture_server):
+    """Fire a burst that the old default could not absorb.
+
+    The senders are held at a barrier and released together, which matters: the
+    pre-existing concurrency test started threads one by one, and that stagger
+    was enough to hide the bug on a fast machine while it still failed on CI.
+    With ``request_queue_size = 5`` a burst of this size lost captures in every
+    measured round.
+    """
+    store, base = capture_server
+    burst = 50
+    errors: list[Exception] = []
+    barrier = threading.Barrier(burst)
+    host, port = base.rsplit(":", 1)[0].removeprefix("http://"), int(base.rsplit(":", 1)[1])
+
+    def fire(i: int) -> None:
+        barrier.wait()
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=15)
+            conn.request("POST", f"/burst/{i}", json.dumps({"n": i}))
+            conn.getresponse().read()
+            conn.close()
+        except Exception as exc:  # pragma: no cover - only on regression
+            errors.append(exc)
+
+    threads = [threading.Thread(target=fire, args=(i,)) for i in range(burst)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+
+    assert not errors, f"{len(errors)} of {burst} senders failed: {errors[:3]}"
+    assert store.count() == burst
