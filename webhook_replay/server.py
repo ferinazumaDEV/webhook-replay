@@ -295,6 +295,37 @@ def make_handler(
     return WebhookCaptureHandler
 
 
+class CaptureServer(ThreadingHTTPServer):
+    """A ThreadingHTTPServer that can actually absorb a burst.
+
+    socketserver's default ``request_queue_size`` is **5**: the kernel accepts
+    five pending connections and refuses or resets the rest before any handler
+    thread sees them. That is the wrong default for this program. A webhook
+    sender does not arrive politely one at a time — a fan-out, or a provider
+    working through a retry backlog, opens many connections at once, and every
+    one past the fifth is a capture silently lost. Losing captures is the one
+    thing this tool exists not to do.
+
+    Measured on a 2-core machine, six rounds each, counting failed connections:
+
+        burst  backlog=5   backlog=SOMAXCONN
+           20          6                   0
+           60        173                   0
+          150        649                   0
+          300       1448                   0
+
+    Twenty simultaneous senders is enough to lose data at the default, which is
+    also why ``test_concurrent_captures_are_all_persisted`` was intermittently
+    red in CI: the test was right and the server was wrong.
+
+    ``socket.SOMAXCONN`` asks for as deep a queue as the OS allows rather than
+    guessing a number; the kernel silently caps it to its own maximum, so this
+    is safe on platforms where that maximum is small.
+    """
+
+    request_queue_size = socket.SOMAXCONN
+
+
 def create_server(
     storage: Storage,
     *,
@@ -307,7 +338,7 @@ def create_server(
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES,
     max_captures: int = DEFAULT_MAX_CAPTURES,
     read_timeout: float | None = DEFAULT_READ_TIMEOUT,
-) -> ThreadingHTTPServer:
+) -> CaptureServer:
     """Create (but do not start) a capture server.
 
     Pass ``port=0`` to bind an OS-assigned free port; read the real port from
@@ -323,4 +354,4 @@ def create_server(
         max_captures=max_captures,
         read_timeout=read_timeout,
     )
-    return ThreadingHTTPServer((host, port), handler)
+    return CaptureServer((host, port), handler)
