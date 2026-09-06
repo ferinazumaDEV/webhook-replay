@@ -1,0 +1,49 @@
+name: tests
+
+# webhook-replay has no runtime dependencies, so the suite is fast and hermetic:
+# it binds local sockets and never leaves the machine.
+#
+# Both invocations are run on purpose. `pytest` and `python -m pytest` are not
+# the same command — the second puts the working directory on sys.path and the
+# first does not — and a 2026-09-04 audit found the documented one (`pytest`)
+# failing while the other passed. That divergence is now a build failure rather
+# than something a reader discovers.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the package and its test extra
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run the suite the way the README documents it
+        run: pytest -q
+
+      - name: Run it again as a module, which resolves imports differently
+        run: python -m pytest -q
+
+      - name: The CLI starts and reports its version
+        run: webhook-replay --version
