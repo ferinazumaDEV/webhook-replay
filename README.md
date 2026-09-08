@@ -1,5 +1,7 @@
 # webhook-replay
 
+[English](README.md) · **Español**: [README.es.md](README.es.md)
+
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
 ![dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
@@ -223,14 +225,14 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The test suite (153 tests) is self-contained: it spins real capture and receiver servers on OS-assigned free ports and exercises capture (including chunked bodies and malformed framing), persistence, concurrent writes, the size / retention / timeout limits, replay (success, non-2xx, connection error, stalled target, method/header overrides, verbatim forwarding of sensitive headers), every CLI command, output redaction, `curl` export and JSON diffing end-to-end. No network access or external services required.
+The test suite (155 tests) is self-contained: it spins real capture and receiver servers on OS-assigned free ports and exercises capture (including chunked bodies and malformed framing), persistence, concurrent writes, the size / retention / timeout limits, replay (success, non-2xx, connection error, stalled target, method/header overrides, verbatim forwarding of sensitive headers), every CLI command, output redaction, `curl` export and JSON diffing end-to-end. No network access or external services required.
 
 ```console
 $ pytest
 ........................................................................ [ 47%]
 ........................................................................ [ 94%]
 .........                                                                [100%]
-153 passed in 22.55s
+155 passed
 ```
 
 ---
@@ -240,9 +242,9 @@ $ pytest
 `webhook-replay` is one of a family of small, dependency-light developer tools I build and maintain in the open — each a focused, standalone utility meant to do one job well. If this one was useful, these siblings might be too:
 
 - [The GEO Handbook](https://github.com/ferinazumaDEV/generative-engine-optimization-handbook) — the open reference on getting content cited by AI answer engines (ChatGPT, Perplexity, Google AI Overviews, Gemini, Copilot).
-- [politeclient](https://github.com/ferinazumaDEV/politeclient) — a polite, bulletproof HTTP client for Python: retries with backoff, per-host rate-limiting, caching and pagination.
+- [politeclient](https://github.com/ferinazumaDEV/politeclient) — a careful, well-behaved HTTP client for Python: retries with backoff, per-host rate-limiting, caching and pagination.
 - [scaffld](https://github.com/ferinazumaDEV/scaffld) — scaffold fully-wired Python projects (tests, CI, pre-commit, license) from templates, with a TUI.
-- [typedout](https://github.com/ferinazumaDEV/typedout) — reliable structured output from any LLM: schema-validated JSON with tolerant repair and retries.
+- [typedout](https://github.com/ferinazumaDEV/typedout) — reliable structured output from OpenAI and Anthropic, with a provider interface for others: schema-validated JSON with tolerant repair and retries.
 - Hub & writing: [zentimes.es](https://zentimes.es).
 
 By [ferinazumaDEV](https://github.com/ferinazumaDEV).
