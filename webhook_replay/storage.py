@@ -6,6 +6,7 @@ the threaded capture server (one request handler thread per connection).
 from __future__ import annotations
 
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -74,7 +75,23 @@ class Storage:
     def __init__(self, path: str | Path = DEFAULT_DB) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._create_owner_only()
         self._init_schema()
+
+    def _create_owner_only(self) -> None:
+        """Create the file with mode 0600 *before* SQLite opens it.
+
+        The store holds captured credentials in clear text (see SECURITY.md), so
+        it must never be readable by other users, not even for the instant
+        between creation and a chmod. SQLite treats an existing empty file as
+        an empty database, so creating it here first costs nothing. An existing
+        file keeps whatever mode it has; on Windows the mode is not applied.
+        """
+        try:
+            fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            return
+        os.close(fd)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.path), timeout=10.0)

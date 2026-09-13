@@ -1,4 +1,4 @@
-<!-- synced-from: a1a914fcd75b719b4108d59f685d3cc97740c9dd -->
+<!-- synced-from: 5b54e3075f9d9488cebb43ae69d7cef536762ec5 -->
 # webhook-replay
 
 **Español** · [English](README.md)
@@ -165,7 +165,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-La batería (155 pruebas) es autocontenida: levanta servidores reales de captura y de recepción en puertos libres que asigna el sistema, y ejercita la captura (incluidos cuerpos troceados y tramas mal formadas), la persistencia, escrituras concurrentes, los límites de tamaño / retención / tiempo, la reproducción (éxito, no-2xx, error de conexión, destino atascado, cambios de método y cabecera, reenvío literal de cabeceras sensibles), todos los comandos del CLI, el enmascarado de salida, la exportación a `curl` y la comparación de JSON de punta a punta. Sin red ni servicios externos.
+La batería (162 pruebas) es autocontenida: levanta servidores reales de captura y de recepción en puertos libres que asigna el sistema, y ejercita la captura (incluidos cuerpos troceados y tramas mal formadas), la persistencia, escrituras concurrentes, los límites de tamaño / retención / tiempo, la reproducción (éxito, no-2xx, error de conexión, destino atascado, cambios de método y cabecera, reenvío literal de cabeceras sensibles), todos los comandos del CLI, el enmascarado de salida, la exportación a `curl` y la comparación de JSON de punta a punta. Sin red ni servicios externos.
 
 ---
 

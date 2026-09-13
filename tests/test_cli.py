@@ -533,3 +533,21 @@ def test_a_file_that_is_not_a_database_is_an_error_not_a_traceback(tmp_path, cap
     assert rc == 2
     assert str(bad) in err and "not a usable SQLite database" in err
     assert "Traceback" not in err and out == ""
+
+
+def test_a_truncated_database_is_an_error_not_a_traceback(tmp_path, capsys):
+    """Same guard, other failure: a real store cut short (an interrupted copy, a
+    full disk). SQLite reports it on open, so the guard catches it before any
+    command runs; the message says why."""
+    db = tmp_path / "captures.db"
+    store = _seed(db)
+    for i in range(50):
+        store.add(method="POST", path=f"/hook/{i}", headers=[], body=b"{}" * 300,
+                  remote_addr="127.0.0.1")
+    with open(db, "r+b") as fh:
+        fh.truncate(db.stat().st_size // 2)
+    rc = main(["--db", str(db), "list"])
+    out, err = capsys.readouterr()
+    assert rc == 2
+    assert str(db) in err and "not a usable SQLite database" in err and "malformed" in err
+    assert "Traceback" not in err and out == ""

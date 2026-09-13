@@ -4,6 +4,30 @@ Notable changes, newest first. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **The capture store is created owner-only.** `captures.db` holds every
+  captured header and body in clear text — real credentials — and was created
+  with whatever the umask allowed (typically `0644`: readable by every user on
+  the machine). On POSIX it is now created with mode `0600`, and the mode is set
+  *at creation*, before SQLite opens the file, so there is no instant in which
+  it is wider. A store that already exists keeps the mode it has: opening is not
+  a `chmod`. On Windows the mode is not applied; the store relies on the
+  profile's ACLs, as before.
+- **`--db` pointing at a file that is not a SQLite database is an error, not a
+  traceback.** A text file, a database from another tool, or a store that was
+  cut short (an interrupted copy, a full disk) now exits `2` with one line naming
+  the path and the reason, the way argparse reports a bad argument. (#14)
+
+### Added
+
+- Tests for the store as a file: a text file and a truncated database raise
+  `sqlite3.DatabaseError` at `Storage()` and are a controlled error at the CLI;
+  a zero-byte file is an empty store; a new store is `0600` even with `umask 0`;
+  an existing store keeps its mode.
+
 ## [0.1.1] — 2026-09-06
 
 **Upgrade if you are on 0.1.0.** That release drops webhooks under a burst.
