@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 
@@ -479,7 +480,16 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.no_color:
         _color.set_enabled(False)
-    store = Storage(args.db)
+    try:
+        store = Storage(args.db)
+    except sqlite3.DatabaseError as exc:
+        # A path that exists but is not a SQLite file -- a typo, a text file, a
+        # database from another tool -- used to escape here as a raw traceback
+        # ending in "file is not a database". The user needs the path and the
+        # reason, not the call stack; and 2 is what argparse uses for a bad
+        # argument, which is what this is.
+        print(f"webhook-replay: {args.db} is not a usable SQLite database ({exc})", file=sys.stderr)
+        return 2
     return args.func(args, store)
 
 

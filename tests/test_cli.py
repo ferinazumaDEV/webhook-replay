@@ -520,3 +520,16 @@ def test_cli_serve_wires_limits_and_captures(tmp_path, monkeypatch):
     assert kwargs["response_body"] == b"queued"
     assert kwargs["host"] == "127.0.0.1"
     assert Storage(db).get(1).body == b'{"n": 1}'
+
+
+def test_a_file_that_is_not_a_database_is_an_error_not_a_traceback(tmp_path, capsys):
+    """`--db` pointed at a non-SQLite file used to crash with a raw traceback
+    ending in `sqlite3.DatabaseError: file is not a database`. It is a bad
+    argument: say which path, say why, exit like argparse does."""
+    bad = tmp_path / "notes.db"
+    bad.write_text("this is not a database\n", encoding="utf-8")
+    rc = main(["--db", str(bad), "list"])
+    out, err = capsys.readouterr()
+    assert rc == 2
+    assert str(bad) in err and "not a usable SQLite database" in err
+    assert "Traceback" not in err and out == ""
