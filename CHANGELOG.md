@@ -6,6 +6,8 @@ Notable changes, newest first. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] — 2026-09-13
+
 ### Fixed
 
 - **The capture store is created owner-only.** `captures.db` holds every
