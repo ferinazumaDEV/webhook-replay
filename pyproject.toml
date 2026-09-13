@@ -7,6 +7,9 @@ name = "webhook-replay"
 version = "0.1.2"
 description = "Capture, inspect and re-fire webhooks locally — a zero-dependency dev tool for debugging webhook integrations."
 readme = "README.md"
+# Version policy: this floor is a minimum, not a recommendation, and everything below 3.11 is
+# compatibility rather than support. 0.2.0 raises the floor to 3.11 (3.10 reaches end of life in
+# October 2026). Nothing changes within 0.1.x.
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Fernando Aporta Franco", email = "ferinazumaDEV@users.noreply.github.com" }]
