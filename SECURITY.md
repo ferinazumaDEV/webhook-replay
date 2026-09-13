@@ -32,6 +32,12 @@ signature only verifies if the stored bytes are the original ones. Do not share 
 not commit it to a repository. Delete it when you are done: `webhook-replay clear -y`, or
 `webhook-replay prune --older-than 7d`, or `rm ~/.webhook-replay/captures.db`.
 
+On POSIX the store is created owner-only (mode `0600`), and the mode is set at creation, before
+SQLite opens the file; SQLite gives its rollback journal (`captures.db-journal`) the same mode. A
+store that already exists keeps whatever mode it has — opening it is not a `chmod` — so if you
+created yours with an earlier version, run `chmod 600 ~/.webhook-replay/captures.db` once. On
+Windows the mode is not applied and the store relies on your profile's ACLs.
+
 Because the store is not sanitised, the output is: `show`, `list --json` and `curl` mask sensitive
 header values as `<redacted>` unless you pass `--show-secrets`. That masking is a guard against
 pasting a secret into an issue or a screen share, not a security boundary — anyone who can read

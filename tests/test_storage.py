@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+import os
+import sqlite3
+import stat
+
+import pytest
+
 from webhook_replay.storage import Storage, WebhookRecord
 
 
@@ -130,3 +136,63 @@ def test_prune_older_than(store):
     removed = store.prune_older_than("2025-01-01T00:00:00.000+00:00")
     assert removed == 1
     assert [r.path for r in store.list()] == ["/new"]
+
+
+# --- a store that is not a store: text files, truncated files, file modes ------ #
+#
+# The CLI turns sqlite3.DatabaseError from Storage() into a one-line message and
+# exit 2 (tests/test_cli.py). These pin what Storage() itself raises, so that the
+# CLI's guard keeps catching the right thing.
+
+
+def test_a_file_that_is_not_sqlite_is_a_database_error(tmp_path):
+    path = tmp_path / "captures.db"
+    path.write_text("hello, not a database\n", encoding="utf-8")
+    with pytest.raises(sqlite3.DatabaseError):
+        Storage(path)
+
+
+def test_a_truncated_database_is_a_database_error(tmp_path):
+    """A store cut short -- a copy that was interrupted, a disk that filled up --
+    is detected on open, not on the first query that lands on a missing page:
+    SQLite compares the page count in the header with the file size."""
+    path = tmp_path / "captures.db"
+    store = Storage(path)
+    for i in range(50):
+        _add(store, path=f"/hook/{i}", body=b"{}" * 300)
+    with open(path, "r+b") as fh:
+        fh.truncate(path.stat().st_size // 2)
+    with pytest.raises(sqlite3.DatabaseError):
+        Storage(path)
+
+
+def test_an_empty_file_is_an_empty_store(tmp_path):
+    """SQLite treats a zero-byte file as a new database; so does the store."""
+    path = tmp_path / "captures.db"
+    path.touch()
+    assert Storage(path).count() == 0
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_a_new_store_is_owner_only_whatever_the_umask(tmp_path):
+    """The file will hold credentials in clear text. Its mode must come from the
+    code, not from the environment: with the loosest possible umask it is still
+    0600, and that is set at creation -- there is no window with a wider mode."""
+    old = os.umask(0)
+    try:
+        path = tmp_path / "captures.db"
+        Storage(path)
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file modes")
+def test_an_existing_store_keeps_the_mode_it_has(tmp_path):
+    """Opening is not a chmod: a file the user has deliberately made readable by
+    a group stays that way. The guarantee is for files this code creates."""
+    path = tmp_path / "captures.db"
+    Storage(path)
+    os.chmod(path, 0o640)
+    Storage(path)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640

@@ -225,7 +225,7 @@ pip install -e '.[dev]'
 pytest
 ```
 
-The test suite (155 tests) is self-contained: it spins real capture and receiver servers on OS-assigned free ports and exercises capture (including chunked bodies and malformed framing), persistence, concurrent writes, the size / retention / timeout limits, replay (success, non-2xx, connection error, stalled target, method/header overrides, verbatim forwarding of sensitive headers), every CLI command, output redaction, `curl` export and JSON diffing end-to-end. No network access or external services required.
+The test suite (162 tests) is self-contained: it spins real capture and receiver servers on OS-assigned free ports and exercises capture (including chunked bodies and malformed framing), persistence, concurrent writes, the size / retention / timeout limits, replay (success, non-2xx, connection error, stalled target, method/header overrides, verbatim forwarding of sensitive headers), every CLI command, output redaction, `curl` export and JSON diffing end-to-end. No network access or external services required.
 
 ```console
 $ pytest
