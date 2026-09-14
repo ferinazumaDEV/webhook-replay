@@ -1,4 +1,4 @@
-<!-- synced-from: 5b54e3075f9d9488cebb43ae69d7cef536762ec5 -->
+<!-- synced-from: 5203a5555611450b7ae734a0db866d6ffc6a4af5 -->
 # webhook-replay
 
 **Español** · [English](README.md)
@@ -130,7 +130,7 @@ Globales: `--db <ruta>` para usar otro almacén, `--no-color` para desactivar el
 
 Como el almacén no se sanea, lo que se sanea es la **salida**:
 
-- `show`, `list --json` y `curl` enmascaran los valores de `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` y cualquier cabecera cuyo nombre contenga `secret`, `token`, `signature`, `hmac`, `api-key`/`api_key` o un segmento `sig`. Salen como `<redacted>`, conservando el prefijo del esquema cuando lo hay (`Bearer <redacted>`).
+- `show`, `list --json` y `curl` enmascaran los valores de `Authorization`, `Proxy-Authorization`, `Cookie`, `Set-Cookie` y cualquier cabecera cuyo nombre contenga `secret`, `token`, `signature`, `hmac`, `password`, `credential`, `authorization`, `api-key`/`api_key`, un segmento `sig` o `auth` (`Paypal-Transmission-Sig`, `X-Auth-Key`) o un segmento `private-key` / `access-key` / `subscription-key` / `shared-key` / `client-key` / `session-key` (`Ocp-Apim-Subscription-Key`). Salen como `<redacted>`, conservando el prefijo del esquema cuando lo hay (`Bearer <redacted>`).
 - `--show-secrets` desactiva el enmascarado para un comando concreto.
 - **La reproducción nunca se enmascara.** Reenvía las cabeceras capturadas literalmente, que es justo para lo que existe la herramienta.
 - El enmascarado va por nombre, no por valor, y sólo cubre las vías de salida. Es una defensa contra pegar un secreto en una incidencia o en una pantalla compartida — **no una garantía** de que ningún secreto pueda aparecer en ningún sitio.

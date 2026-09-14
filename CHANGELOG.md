@@ -12,6 +12,40 @@ Notable changes, newest first. The format follows
   end of life in October 2026). Nothing changes within 0.1.x; CI keeps running on every version the
   package still declares.
 
+### Fixed
+
+- **A `Content-Length` with more than 4300 digits no longer kills the handler.** `int()` refuses
+  strings that long with a `ValueError` that escaped as a traceback on stderr and a connection
+  closed without any response (also through `Expect: 100-continue`). Leading zeros are now dropped
+  before conversion, so `000…01` of any length is the one byte the grammar says it is, and a numeral
+  of more than 20 significant digits is a `400 malformed Content-Length`. That is what RFC 9110 §8.6
+  asks for: anticipate very large decimal numerals and prevent integer-conversion errors.
+- **A body shorter than its `Content-Length` is no longer stored as a capture.** When the sender
+  closed early, the partial body was saved as if complete and answered `200`. RFC 9112 §6.3 says
+  such a message MUST be treated as incomplete; `serve` now answers `400 body truncated: N of M bytes
+  received` and stores nothing. A sender that stalls instead still gets the `408`.
+- **`--max-body`, `--since` and `--header` fail as usage errors instead of tracebacks.** A size
+  past float range (`--max-body 1` followed by 400 zeros) raised `OverflowError` from `int(inf)`; an
+  age past `timedelta`'s range (`--since 99999999999d`) or an ISO timestamp with no UTC form
+  (`0001-01-01T00:00:00+14:00`) raised `OverflowError` from the date arithmetic; and a header with
+  an empty name or a line break in its value (`--header ':x'`, `--header $'X-A: v\nInjected: y'`)
+  raised `ValueError` from `http.client` in the middle of the replay. All three are now
+  `ArgumentTypeError`s with a message. Sizes are parsed exactly (no float rounding) and capped at
+  2⁶³−1; header names must be RFC 9110 tokens.
+
+### Security
+
+- **Redaction covers more credential-bearing header names.** `X-Auth-Key` (Cloudflare),
+  `Ocp-Apim-Subscription-Key` (Azure), `X-Forwarded-Authorization`, `X-Password`, `X-Credential`,
+  `X-Access-Key`, `X-Private-Key`, `X-Shared-Key`, `X-Client-Key` and `X-Session-Key` were printed in
+  clear by `show`, `list --json` and `curl`. The name rule now also matches `password`, `passwd`,
+  `credential`, `authorization`, an `auth` segment, and the `*-key` compounds that name a
+  credential; `Idempotency-Key`, `X-Request-Id`, `X-Session-Id` and `X-Author` stay readable.
+
+All of the above were found by `tests/test_adversarial.py`, a new suite that feeds `serve`, the
+CLI parsers and the redaction rule the inputs a hostile or merely broken sender produces. Every
+test in it failed against 0.1.2 before the fix was written.
+
 ## [0.1.2] — 2026-09-13
 
 ### Fixed
