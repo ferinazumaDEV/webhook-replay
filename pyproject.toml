@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "webhook-replay"
-version = "0.1.2"
+version = "0.1.3"
 description = "Capture, inspect and re-fire webhooks locally — a zero-dependency dev tool for debugging webhook integrations."
 readme = "README.md"
 # Version policy: this floor is a minimum, not a recommendation, and everything below 3.11 is
