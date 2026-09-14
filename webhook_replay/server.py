@@ -46,6 +46,15 @@ _READ_CHUNK = 64 * 1024
 # uses the same bound), and how many trailer lines before we give up.
 _MAX_LINE = 65536
 _MAX_TRAILERS = 100
+# Longest Content-Length numeral accepted, once leading zeros are dropped. RFC
+# 9110 s8.6 asks a recipient to anticipate very large decimal numerals and
+# prevent integer-conversion errors: int() itself refuses a string of more than
+# 4300 characters, and that ValueError used to escape the handler as a
+# traceback on stderr and a connection closed without any response. Leading
+# zeros are stripped before int() sees the text (so ``000...01`` of any length
+# is the one byte the grammar says it is), and twenty significant digits
+# already exceed 2**63.
+_MAX_LENGTH_DIGITS = 20
 
 # RFC 9110 s8.6: Content-Length is 1*DIGIT -- no sign, no underscore, ASCII only.
 _DIGITS_RE = re.compile(r"[0-9]+")
@@ -83,6 +92,24 @@ def _default_reject_logger(method: str, path: str, status: int, reason: str) -> 
         f"{_color.paint(f'{status} {reason}', 'red')}",
         flush=True,
     )
+
+
+def _parse_content_length(values: list[str]) -> int | None:
+    """The body length one ``Content-Length`` header declares, or ``None`` if unusable.
+
+    Duplicate, signed, underscored or non-ASCII values all capture the wrong
+    bytes (RFC 9110 s8.6 says reject), and a numeral longer than
+    :data:`_MAX_LENGTH_DIGITS` is refused before ``int()`` ever sees it.
+    """
+    if len(values) != 1:
+        return None
+    text = values[0].strip()
+    if not _DIGITS_RE.fullmatch(text):
+        return None
+    digits = text.lstrip("0") or "0"
+    if len(digits) > _MAX_LENGTH_DIGITS:
+        return None
+    return int(digits)
 
 
 def make_handler(
@@ -191,17 +218,11 @@ def make_handler(
             # body -- that is what `Expect: 100-continue` is for. Anything
             # else gets the standard `100 Continue`; the full validation of
             # the headers happens in _capture.
-            values = self.headers.get_all("Content-Length") or []
-            if (
-                max_body_bytes
-                and len(values) == 1
-                and _DIGITS_RE.fullmatch(values[0].strip())
-                and int(values[0].strip()) > max_body_bytes
-            ):
+            length = _parse_content_length(self.headers.get_all("Content-Length") or [])
+            if max_body_bytes and length is not None and length > max_body_bytes:
                 self._reject(
                     413,
-                    f"body of {values[0].strip()} bytes exceeds the "
-                    f"{max_body_bytes} byte limit",
+                    f"body of {length} bytes exceeds the {max_body_bytes} byte limit",
                 )
                 return False
             return super().handle_expect_100()
@@ -214,11 +235,8 @@ def make_handler(
                 # request-smuggling ingredient; refuse rather than guess.
                 self._reject(400, "Content-Length and Transfer-Encoding both present")
                 return
-            if len(lengths) > 1 or (
-                lengths and not _DIGITS_RE.fullmatch(lengths[0].strip())
-            ):
-                # Duplicate, signed, underscored or non-ASCII lengths all
-                # capture the wrong bytes; RFC 9110 s8.6 says reject.
+            length = _parse_content_length(lengths) if lengths else 0
+            if length is None:
                 self._reject(400, "malformed Content-Length")
                 return
             chunked = False
@@ -228,7 +246,6 @@ def make_handler(
                     self._reject(501, "unsupported Transfer-Encoding")
                     return
                 chunked = True
-            length = int(lengths[0].strip()) if lengths else 0
 
             if max_body_bytes and length > max_body_bytes:
                 # Refuse before reading: the point of the cap is not to buffer
@@ -257,6 +274,14 @@ def make_handler(
                 return
             except OSError:
                 self.close_connection = True
+                return
+
+            if not chunked and len(body) != length:
+                # RFC 9112 s6.3: fewer bytes than Content-Length announced
+                # means the sender closed early. The message is incomplete and
+                # MUST NOT be treated as received -- let alone stored as a
+                # capture and answered 200, which is what used to happen.
+                self._reject(400, f"body truncated: {len(body)} of {length} bytes received")
                 return
 
             headers = [(key, value) for key, value in self.headers.items()]

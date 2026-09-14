@@ -8,9 +8,11 @@ what lands on your terminal, your clipboard or a pasted bug report is masked.
 
 Detection is deny-list based on the header *name* only: an exact match against
 :data:`SENSITIVE_HEADERS`, or a substring match against
-:data:`SENSITIVE_NAME_RE` (``secret``, ``token``, ``signature``, ``hmac``, a
-``sig`` segment as in ``Paypal-Transmission-Sig``, ``api-key``). Values are
-never inspected, so a masked header stays recognisable in the output.
+:data:`SENSITIVE_NAME_RE` (``secret``, ``token``, ``signature``, ``hmac``,
+``password``, ``credential``, ``authorization``, ``api-key``, a ``sig`` or
+``auth`` segment as in ``Paypal-Transmission-Sig`` or ``X-Auth-Key``, and the
+``*-key`` names that carry a credential, such as ``Ocp-Apim-Subscription-Key``).
+Values are never inspected, so a masked header stays recognisable in the output.
 """
 from __future__ import annotations
 
@@ -32,11 +34,18 @@ SENSITIVE_HEADERS = frozenset(
 
 #: Substring pattern for the long tail: ``X-Hub-Signature``, ``X-Api-Key``,
 #: ``Stripe-Signature``, ``X-Auth-Token``, ``X-Shared-Secret``,
-#: ``X-Shopify-Hmac-Sha256``, ``Paypal-Transmission-Sig``, ... The ``sig``
-#: alternative only matches a whole ``-``-delimited segment, so ``X-Design-Id``
-#: is left alone.
+#: ``X-Shopify-Hmac-Sha256``, ``Paypal-Transmission-Sig``, ``X-Password``,
+#: ``X-Forwarded-Authorization``, ``X-Auth-Key`` (Cloudflare),
+#: ``Ocp-Apim-Subscription-Key`` (Azure), ``X-Access-Key``, ... The ``sig`` and
+#: ``auth`` alternatives only match a whole ``-``-delimited segment, so
+#: ``X-Design-Id`` and ``X-Author`` are left alone, and ``key`` only counts in
+#: the compounds that name a credential, so ``Idempotency-Key`` stays readable.
 SENSITIVE_NAME_RE = re.compile(
-    r"secret|token|signature|hmac|(?:^|-)sig(?:$|-)|api[-_]?key", re.IGNORECASE
+    r"secret|token|signature|hmac|password|passwd|credential|authorization"
+    r"|(?:^|-)(?:sig|auth)(?:$|-)"
+    r"|(?:^|-)(?:private|access|subscription|shared|client|session)-key(?:$|-)"
+    r"|api[-_]?key",
+    re.IGNORECASE,
 )
 
 #: What replaces a masked value.

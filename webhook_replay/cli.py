@@ -7,6 +7,7 @@ import re
 import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
+from fractions import Fraction
 
 from . import __version__, _color
 from .diff import diff_records
@@ -33,6 +34,15 @@ _SIZE_UNITS = {
     "g": 1000 ** 3, "gb": 1000 ** 3, "gi": 1024 ** 3, "gib": 1024 ** 3,
 }
 
+# RFC 9110 s5.1: a field name is a token. http.client only checks the name and
+# value when the request is sent, as a ValueError from deep inside replay(), so
+# --header is checked here where it becomes a usage error instead.
+_HEADER_NAME_RE = re.compile(r"[!#$%&'*+.^_`|~0-9A-Za-z-]+")
+
+# --max-body above this cannot be honoured by anything downstream anyway; it also
+# keeps a 5000-digit argument from reaching int()'s conversion limit.
+_MAX_SIZE = 2**63 - 1
+
 _REDACTION_HINT = (
     "some header values are masked; re-run with --show-secrets to see them"
 )
@@ -53,7 +63,14 @@ def parse_since(value: str | None) -> str | None:
     match = _SINCE_RE.match(text)
     if match:
         amount, unit = int(match.group(1)), match.group(2).lower()
-        cutoff = datetime.now(timezone.utc) - timedelta(**{_SINCE_UNITS[unit]: amount})
+        try:
+            cutoff = datetime.now(timezone.utc) - timedelta(**{_SINCE_UNITS[unit]: amount})
+        except OverflowError:
+            # timedelta and datetime both raise OverflowError past their range,
+            # and argparse turns only ValueError into a usage error.
+            raise argparse.ArgumentTypeError(
+                f"age {value!r} reaches back before year 1; use a smaller age"
+            ) from None
         return cutoff.isoformat(timespec="milliseconds")
     if text.endswith(("Z", "z")):
         # datetime.fromisoformat only accepts a trailing Z from Python 3.11 on.
@@ -66,7 +83,13 @@ def parse_since(value: str | None) -> str | None:
         ) from None
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc).isoformat(timespec="milliseconds")
+    try:
+        return parsed.astimezone(timezone.utc).isoformat(timespec="milliseconds")
+    except OverflowError:
+        # 0001-01-01T00:00:00+14:00 is a valid timestamp that has no UTC form.
+        raise argparse.ArgumentTypeError(
+            f"timestamp {value!r} has no representation in UTC"
+        ) from None
 
 
 def parse_positive_int(value: str) -> int:
@@ -97,19 +120,38 @@ def parse_size(value: str) -> int:
         raise argparse.ArgumentTypeError(
             f"size must be bytes or a value like 512KB / 1MiB, got {value!r}"
         )
-    amount, unit = float(match.group(1)), match.group(2).lower()
+    unit = match.group(2).lower()
     if unit not in _SIZE_UNITS:
         raise argparse.ArgumentTypeError(f"unknown size unit in {value!r}")
-    return int(amount * _SIZE_UNITS[unit])
+    try:
+        # Exact arithmetic: float("1e30") rounds and float("1e400") is inf,
+        # whose int() is an OverflowError that argparse does not catch.
+        size = int(Fraction(match.group(1)) * _SIZE_UNITS[unit])
+    except ValueError:
+        # More digits than int() converts (4300): same answer as "too large".
+        size = _MAX_SIZE + 1
+    if size > _MAX_SIZE:
+        raise argparse.ArgumentTypeError(
+            f"size {value!r} is larger than any body this program could hold"
+        )
+    return size
 
 
 def parse_header(raw: str) -> Header:
+    """``--header 'Name: value'``, checked against the grammar the target applies."""
     if ":" not in raw:
         raise argparse.ArgumentTypeError(
             f"header must be in 'Name: value' form, got {raw!r}"
         )
     key, value = raw.split(":", 1)
-    return key.strip(), value.strip()
+    key, value = key.strip(), value.strip()
+    if not _HEADER_NAME_RE.fullmatch(key):
+        raise argparse.ArgumentTypeError(
+            f"invalid header name {key!r}: letters, digits and - only, and not empty"
+        )
+    if any(ch in value for ch in "\r\n\x00"):
+        raise argparse.ArgumentTypeError("a header value must be a single line")
+    return key, value
 
 
 def _short_time(iso: str) -> str:
